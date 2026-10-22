@@ -1,0 +1,436 @@
+#!/usr/bin/env python3
+"""Keyboard-driven TUI for reviewing, staging, committing, and pushing a Git repository."""
+from __future__ import annotations
+
+import argparse
+import curses
+import os
+import shutil
+import subprocess
+import sys
+from typing import NamedTuple
+
+VERSION = "0.1.0"
+
+
+class Change(NamedTuple):
+    xy: str
+    path: str
+
+    @property
+    def staged(self) -> bool:
+        return self.xy[0] not in (" ", "?")
+
+    @property
+    def conflicted(self) -> bool:
+        return "U" in self.xy or self.xy in ("AA", "DD")
+
+    @property
+    def untracked(self) -> bool:
+        return self.xy == "??"
+
+
+def run_git(root: str, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess:
+    """Run Git without a shell, preserving paths and arguments safely."""
+    try:
+        return subprocess.run(
+            ["git", *args], cwd=root, input=input_text, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("Git is not installed or is not on PATH.") from exc
+
+
+def parse_porcelain(data: bytes) -> list[Change]:
+    """Parse git status porcelain v1 with -z; supports spaces and unusual filenames."""
+    records = data.split(b"\0")
+    changes: list[Change] = []
+    i = 0
+    while i < len(records):
+        record = records[i]
+        i += 1
+        if not record:
+            continue
+        if len(record) < 4 or record[2:3] != b" ":
+            continue
+        xy = record[:2].decode("ascii", errors="replace")
+        path = os.fsdecode(record[3:])
+        changes.append(Change(xy, path))
+        # Rename/copy entries have an extra NUL-delimited old path with -z.
+        if "R" in xy or "C" in xy:
+            i += 1
+    return sorted(changes, key=lambda item: (not item.staged, item.path.casefold(), item.path))
+
+
+def get_changes(root: str) -> list[Change]:
+    result = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    if result.returncode:
+        message = result.stderr.decode(errors="replace").strip() or "git status failed"
+        raise RuntimeError(message)
+    return parse_porcelain(result.stdout)
+
+
+def git_text(root: str, *args: str) -> str:
+    result = run_git(root, *args)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def get_branch(root: str) -> str:
+    return git_text(root, "branch", "--show-current") or "(detached HEAD)"
+
+
+def get_upstream(root: str) -> str:
+    return git_text(root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+
+
+def get_ahead_behind(root: str, upstream: str) -> tuple[int, int] | None:
+    result = run_git(root, "rev-list", "--left-right", "--count", f"HEAD...{upstream}")
+    if result.returncode:
+        return None
+    try:
+        ahead, behind = result.stdout.split()
+        return int(ahead), int(behind)
+    except (ValueError, TypeError):
+        return None
+
+
+def safe_path(path: str) -> str:
+    """Make control characters visible in the TUI (including newline filenames)."""
+    return "".join(ch if ch.isprintable() else f"\\x{ord(ch):02x}" for ch in path)
+
+
+def add_line(stdscr, y: int, x: int, text: str, attr: int = 0, width: int | None = None) -> None:
+    height, screen_width = stdscr.getmaxyx()
+    if y < 0 or y >= height or x < 0 or x >= screen_width:
+        return
+    available = max(1, screen_width - x - 1)
+    if width is not None:
+        available = min(available, width)
+    try:
+        stdscr.addnstr(y, x, text, available, attr)
+    except curses.error:
+        pass
+
+
+def init_colors() -> None:
+    if not curses.has_colors():
+        return
+    try:
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_CYAN, -1)
+        curses.init_pair(2, curses.COLOR_GREEN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        curses.init_pair(4, curses.COLOR_RED, -1)
+    except curses.error:
+        pass
+
+
+def color(pair: int, fallback: int = 0) -> int:
+    return curses.color_pair(pair) if curses.has_colors() else fallback
+
+
+def message_screen(stdscr, title: str, content: str) -> None:
+    lines = content.expandtabs(4).splitlines() or ["(no output)"]
+    height, width = stdscr.getmaxyx()
+    offset = 0
+    while True:
+        stdscr.erase()
+        add_line(stdscr, 0, 0, f" gh-push · {title} ", curses.A_BOLD | color(1))
+        add_line(stdscr, 1, 1, "─" * max(1, width - 3), curses.A_DIM)
+        visible = max(1, height - 5)
+        for row, line in enumerate(lines[offset:offset + visible], start=2):
+            add_line(stdscr, row, 1, line)
+        add_line(stdscr, height - 2, 1, "↑/↓ scroll · PgUp/PgDn page · Home/End · q/Enter return", curses.A_DIM)
+        add_line(stdscr, height - 1, 1, f"Lines {min(offset + 1, len(lines))}-{min(offset + visible, len(lines))} of {len(lines)}", curses.A_DIM)
+        stdscr.refresh()
+        key = stdscr.getch()
+        if key in (ord("q"), ord("Q"), 27, 10, 13, curses.KEY_ENTER):
+            return
+        if key in (curses.KEY_UP, ord("k")):
+            offset = max(0, offset - 1)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            offset = min(max(0, len(lines) - visible), offset + 1)
+        elif key == curses.KEY_PPAGE:
+            offset = max(0, offset - visible)
+        elif key == curses.KEY_NPAGE:
+            offset = min(max(0, len(lines) - visible), offset + visible)
+        elif key == curses.KEY_HOME:
+            offset = 0
+        elif key == curses.KEY_END:
+            offset = max(0, len(lines) - visible)
+
+
+def confirm(stdscr, prompt: str) -> bool:
+    height, _ = stdscr.getmaxyx()
+    stdscr.erase()
+    add_line(stdscr, max(1, height // 2 - 1), 2, "Confirm action", curses.A_BOLD | color(3))
+    add_line(stdscr, max(1, height // 2), 2, prompt)
+    add_line(stdscr, min(height - 1, height // 2 + 2), 2, "y continue · any other key cancel", curses.A_DIM)
+    stdscr.refresh()
+    return stdscr.getch() in (ord("y"), ord("Y"))
+
+
+def prompt_text(stdscr, title: str, prompt: str, max_bytes: int = 300) -> str:
+    height, _ = stdscr.getmaxyx()
+    stdscr.erase()
+    add_line(stdscr, max(1, height // 2 - 2), 2, title, curses.A_BOLD | color(1))
+    add_line(stdscr, max(1, height // 2), 2, prompt)
+    add_line(stdscr, min(height - 2, height // 2 + 2), 2, "Enter submit · Ctrl+C cancel", curses.A_DIM)
+    input_row = min(height - 1, height // 2 + 1)
+    stdscr.move(input_row, 2)
+    stdscr.refresh()
+    try:
+        curses.echo()
+        curses.curs_set(1)
+        value = stdscr.getnstr(input_row, 2, max_bytes).decode(errors="replace")
+        return value.strip()
+    except (KeyboardInterrupt, curses.error):
+        return ""
+    finally:
+        curses.noecho()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+
+
+def run_interactive(stdscr, root: str, args: list[str], title: str) -> int:
+    """Restore the real terminal for Git hooks, SSH prompts, etc."""
+    curses.def_prog_mode()
+    curses.endwin()
+    print(f"\n── {title} ──")
+    try:
+        result = subprocess.run(["git", *args], cwd=root, check=False)
+        code = result.returncode
+    except KeyboardInterrupt:
+        code = 130
+    finally:
+        try:
+            input("\nPress Enter to return to gh-push...")
+        except (EOFError, KeyboardInterrupt):
+            pass
+        curses.reset_prog_mode()
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+    return code
+
+
+def stage_or_unstage(root: str, change: Change) -> str:
+    if change.conflicted:
+        return f"{safe_path(change.path)} has unresolved conflicts; resolve them in your editor first."
+    if change.staged:
+        result = run_git(root, "restore", "--staged", "--", change.path)
+        if result.returncode:
+            details = (result.stderr or result.stdout).strip()
+            return f"Could not unstage {safe_path(change.path)}: {details}"
+        return f"Unstaged {safe_path(change.path)}. Partial staging for this file is removed."
+    result = run_git(root, "add", "--", change.path)
+    if result.returncode:
+        details = (result.stderr or result.stdout).strip()
+        return f"Could not stage {safe_path(change.path)}: {details}"
+    return f"Staged {safe_path(change.path)}."
+
+
+def show_diff(stdscr, root: str, change: Change) -> None:
+    sections: list[str] = []
+    if change.untracked:
+        absolute = os.path.abspath(os.path.join(root, change.path))
+        result = subprocess.run(
+            ["git", "diff", "--no-index", "/dev/null", absolute],
+            cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+        )
+        if result.stdout:
+            sections.append(result.stdout)
+        elif result.stderr:
+            sections.append(result.stderr)
+    else:
+        if change.staged:
+            staged = run_git(root, "diff", "--cached", "--", change.path)
+            if staged.stdout:
+                sections.append("── Staged diff ──\n" + staged.stdout)
+        if change.xy[1] != " ":
+            unstaged = run_git(root, "diff", "--", change.path)
+            if unstaged.stdout:
+                sections.append("── Unstaged diff ──\n" + unstaged.stdout)
+    message_screen(stdscr, f"Diff: {safe_path(change.path)}", "\n".join(sections) or "No text diff available (the file may be binary or the index may be clean).")
+
+
+def get_remotes(root: str) -> list[str]:
+    output = git_text(root, "remote")
+    return output.splitlines() if output else []
+
+
+def do_push(stdscr, root: str, branch: str, upstream: str) -> str:
+    if branch == "(detached HEAD)":
+        return "Cannot push from a detached HEAD. Check out a branch first."
+    if upstream:
+        destination = upstream
+        args = ["push"]
+    else:
+        remotes = get_remotes(root)
+        if not remotes:
+            return "No Git remote is configured. Add a remote before pushing."
+        remote = "origin" if "origin" in remotes else remotes[0]
+        destination = f"{remote}/{branch} (new upstream)"
+        args = ["push", "--set-upstream", remote, branch]
+    if not confirm(stdscr, f"Push commits on {branch} to {destination}? Working-tree changes are not included."):
+        return "Push cancelled."
+    code = run_interactive(stdscr, root, args, f"git {' '.join(args)}")
+    return "Push command succeeded." if code == 0 else f"Push failed with exit status {code}."
+
+
+def draw(stdscr, root: str, changes: list[Change], cursor: int, notice: str) -> None:
+    stdscr.erase()
+    height, width = stdscr.getmaxyx()
+    branch = get_branch(root)
+    upstream = get_upstream(root)
+    staged_count = sum(item.staged for item in changes)
+    unstaged_count = len(changes) - staged_count
+    add_line(stdscr, 0, 0, " gh-push ", curses.A_BOLD | color(1))
+    add_line(stdscr, 1, 1, root, curses.A_DIM)
+    branch_summary = f"Branch: {branch}"
+    if upstream:
+        counts = get_ahead_behind(root, upstream)
+        branch_summary += f"  ·  upstream: {upstream}"
+        if counts is not None:
+            branch_summary += f"  ·  ↑{counts[0]} ↓{counts[1]}"
+    else:
+        branch_summary += "  ·  no upstream"
+    add_line(stdscr, 2, 1, branch_summary, curses.A_BOLD)
+    add_line(stdscr, 3, 1, f"{len(changes)} changed  ·  {staged_count} staged  ·  {unstaged_count} unstaged", color(2) if staged_count else curses.A_DIM)
+    add_line(stdscr, 4, 1, "─" * max(1, width - 3), curses.A_DIM)
+
+    if height < 10 or width < 45:
+        add_line(stdscr, 5, 1, "Terminal too small; resize to at least 45x10.", color(3))
+    elif not changes:
+        add_line(stdscr, 6, 2, "Working tree clean.", color(2) | curses.A_BOLD)
+        add_line(stdscr, 8, 2, "You can still push commits or view the recent log.", curses.A_DIM)
+    else:
+        add_line(stdscr, 5, 1, "SEL  X Y  FILE  (Space: stage/unstage whole file)", curses.A_DIM)
+        list_top = 6
+        list_bottom = max(list_top, height - 5)
+        visible = max(1, list_bottom - list_top)
+        start = max(0, min(cursor - visible // 2, len(changes) - visible))
+        for index, item in enumerate(changes[start:start + visible], start=start):
+            marker = "●" if item.staged else "○"
+            label = f" {marker}   {item.xy[0]} {item.xy[1]}  {safe_path(item.path)}"
+            attr = curses.A_REVERSE | curses.A_BOLD if index == cursor else curses.A_NORMAL
+            if item.conflicted:
+                attr |= color(4)
+            elif item.staged:
+                attr |= color(2)
+            elif item.untracked:
+                attr |= color(3)
+            add_line(stdscr, list_top + index - start, 1, label, attr)
+
+    if notice:
+        add_line(stdscr, height - 4, 1, notice, curses.A_BOLD | color(3))
+    add_line(stdscr, height - 3, 1, "↑/↓ or j/k select · Space stage · d diff · a stage all", curses.A_DIM)
+    add_line(stdscr, height - 2, 1, "c commit staged · p push · f fetch · l log · r refresh · q quit", curses.A_DIM)
+    add_line(stdscr, height - 1, 1, "Push never force-pushes; resolve conflicts outside this tool.", curses.A_DIM)
+    stdscr.refresh()
+
+
+def main_ui(stdscr, root: str) -> None:
+    try:
+        curses.curs_set(0)
+    except curses.error:
+        pass
+    init_colors()
+    stdscr.keypad(True)
+    stdscr.timeout(-1)
+    changes = get_changes(root)
+    cursor = 0
+    notice = "Ready. Space stages or unstages the selected file."
+    while True:
+        cursor = max(0, min(cursor, len(changes) - 1)) if changes else 0
+        draw(stdscr, root, changes, cursor, notice)
+        key = stdscr.getch()
+        if key in (ord("q"), ord("Q"), 27):
+            return
+        if key in (curses.KEY_UP, ord("k")):
+            cursor = max(0, cursor - 1)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            cursor = min(max(0, len(changes) - 1), cursor + 1)
+        elif key == curses.KEY_RESIZE:
+            continue
+        elif key == ord("r"):
+            changes = get_changes(root)
+            notice = f"Refreshed: {len(changes)} changed file(s)."
+        elif key == ord(" ") and changes:
+            notice = stage_or_unstage(root, changes[cursor])
+            changes = get_changes(root)
+        elif key == ord("a"):
+            if not changes:
+                notice = "Nothing to stage."
+            elif confirm(stdscr, f"Stage all {len(changes)} changed file(s) with git add -A?"):
+                result = run_git(root, "add", "-A")
+                notice = "Staged all changes." if result.returncode == 0 else (result.stderr or result.stdout).strip()
+                changes = get_changes(root)
+            else:
+                notice = "Stage-all cancelled."
+        elif key == ord("d") and changes:
+            selected = changes[cursor]
+            show_diff(stdscr, root, selected)
+            notice = f"Diff closed: {safe_path(selected.path)}"
+        elif key == ord("c"):
+            cached = run_git(root, "diff", "--cached", "--quiet")
+            if cached.returncode == 0:
+                notice = "Nothing staged to commit. Select files and press Space first."
+            elif cached.returncode != 1:
+                notice = (cached.stderr or cached.stdout).strip() or "Could not inspect the Git index."
+            else:
+                summary = git_text(root, "diff", "--cached", "--stat")
+                prompt = prompt_text(stdscr, "Create commit", "Commit message:")
+                if not prompt:
+                    notice = "Commit cancelled (empty message)."
+                else:
+                    if summary:
+                        message_screen(stdscr, "Staged changes", summary + "\n\nPress any key to continue.")
+                    code = run_interactive(stdscr, root, ["commit", "-m", prompt], "git commit")
+                    notice = "Commit created." if code == 0 else f"git commit failed with exit status {code}."
+                    changes = get_changes(root)
+        elif key == ord("p"):
+            notice = do_push(stdscr, root, get_branch(root), get_upstream(root))
+            changes = get_changes(root)
+        elif key == ord("f"):
+            if not get_remotes(root):
+                notice = "No remote configured; nothing to fetch."
+            else:
+                code = run_interactive(stdscr, root, ["fetch"], "git fetch")
+                changes = get_changes(root)
+                notice = "Fetch complete." if code == 0 else f"git fetch failed with exit status {code}."
+        elif key == ord("l"):
+            log = git_text(root, "log", "-8", "--oneline", "--decorate", "--all")
+            message_screen(stdscr, "Recent commits", log or "No commits yet, or Git could not read the log.")
+            notice = "Closed commit log."
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-C", "--repo", default=".", help="repository path (default: current directory)")
+    parser.add_argument("--version", action="version", version=f"gh-push {VERSION}")
+    args = parser.parse_args(argv)
+    if shutil.which("git") is None:
+        parser.error("Git is required and must be available on PATH")
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        parser.error("run gh-push in an interactive terminal")
+    result = run_git(os.path.abspath(args.repo), "rev-parse", "--show-toplevel")
+    if result.returncode:
+        parser.error(f"{args.repo!r} is not inside a Git working tree")
+    root = result.stdout.strip()
+    try:
+        curses.wrapper(main_ui, root)
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -15,6 +15,7 @@ A collection of scripts and utilities I use for setting up and managing my syste
 - [Remote tools](RemoteTools/README.md) — SSH-oriented utilities for remote Linux hosts.
 - [Sway tools](wm/sway/README.md) — utilities specific to Sway/SwayFX.
 - [Sway Monitor TUI](SwayMonitorTUI/README.md) — terminal interface for managing Sway monitors.
+- [gh-push](gh-push/README.md) — keyboard-driven Git staging, commit, and push TUI.
 
 ## Notes
 
