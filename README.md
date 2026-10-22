@@ -12,7 +12,8 @@ A collection of scripts and utilities I use for setting up and managing my syste
 
 ## What's here
 
-- [Remote tools](RemoteTools/README.md) — SSH-oriented utilities and Sway helpers, with installation notes and per-script guides.
+- [Remote tools](RemoteTools/README.md) — SSH-oriented utilities for remote Linux hosts.
+- [Sway tools](wm/sway/README.md) — utilities specific to Sway/SwayFX.
 - [Sway Monitor TUI](SwayMonitorTUI/README.md) — terminal interface for managing Sway monitors.
 
 ## Notes
