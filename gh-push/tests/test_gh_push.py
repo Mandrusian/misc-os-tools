@@ -32,6 +32,16 @@ class ParseStatusTests(unittest.TestCase):
     def test_control_characters_are_visible(self):
         self.assertEqual(MODULE.safe_path("a\nb\t"), "a\\x0ab\\x09")
 
+    def test_sync_plan_fast_forwards_when_local_branch_is_only_behind(self):
+        self.assertEqual(MODULE.sync_plan(0, 12), "fast-forward")
+
+    def test_sync_plan_rebases_when_branches_have_diverged(self):
+        self.assertEqual(MODULE.sync_plan(3, 12), "rebase")
+
+    def test_sync_plan_does_nothing_when_not_behind(self):
+        self.assertEqual(MODULE.sync_plan(0, 0), "up-to-date")
+        self.assertEqual(MODULE.sync_plan(4, 0), "up-to-date")
+
 
 if __name__ == "__main__":
     unittest.main()
