@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/misc-os-tools-logo.svg" alt="Misc OS Tools by Ari" width="240">
+  <img src="assets/logo2@2x.png" alt="Misc OS Tools by Ari" width="240">
 </p>
 
 <p align="center">
