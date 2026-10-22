@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Personal monitor-layout helper for Sway/SwayFX.
+# Reads monitor positions from ~/.config/sway/monitors.conf and reapplies them.
+set -euo pipefail
+
+if [[ -z "${SWAYSOCK:-}" ]]; then
+    echo "swaym: run this inside a Sway/SwayFX session." >&2
+    exit 1
+fi
+command -v swaymsg >/dev/null 2>&1 || { echo "swaym: swaymsg not found." >&2; exit 127; }
+command -v python3 >/dev/null 2>&1 || { echo "swaym: python3 not found." >&2; exit 127; }
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/sway"
+MONITORS="$CONFIG_DIR/monitors.conf"
+mkdir -p "$CONFIG_DIR"
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+    cat <<'EOF'
+Usage: swaym [--save-current | --help]
+
+swaym             Reapply saved output position rules from monitors.conf.
+swaym --save-current
+                  Save current active output positions to monitors.conf.
+
+Edit monitors.conf to customize positions. The command does not assume output
+names or hardcode monitor dimensions. Add this to your Sway config if needed:
+    include ~/.config/sway/monitors.conf
+EOF
+    exit 0
+fi
+
+if [[ "${1:-}" == "--save-current" ]]; then
+    python3 - "$MONITORS" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+p = Path(sys.argv[1])
+out = subprocess.run(["swaymsg", "-t", "get_outputs", "-r"], check=True,
+                     capture_output=True, text=True)
+outputs = json.loads(out.stdout)
+lines = ["# Output positions saved by swaym --save-current"]
+for o in outputs:
+    if o.get("active") and o.get("name"):
+        r = o.get("rect") or {}
+        lines.append(f'output {o["name"]} position {int(r.get("x", 0))} {int(r.get("y", 0))}')
+p.write_text("\n".join(lines) + "\n")
+print(f"Saved active output positions to {p}")
+PY
+    exit 0
+fi
+
+if [[ $# -ne 0 ]]; then
+    echo "Usage: swaym [--save-current | --help]" >&2
+    exit 2
+fi
+
+if [[ ! -f "$MONITORS" ]]; then
+    echo "swaym: no saved layout at $MONITORS" >&2
+    echo "Run 'swaym --save-current' while your monitors are arranged correctly, then run swaym." >&2
+    exit 1
+fi
+
+# Apply only position rules from the saved file; do not reload the compositor.
+python3 - "$MONITORS" <<'PY'
+import re, subprocess, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+rules = []
+for raw in path.read_text().splitlines():
+    line = raw.strip()
+    if not line or line.startswith("#"):
+        continue
+    m = re.match(r"^output\s+(\S+)\s+position\s+(-?\d+)\s+(-?\d+)\s*$", line)
+    if m:
+        rules.append(m.groups())
+if not rules:
+    sys.exit(f"swaym: no 'output NAME position X Y' rules found in {path}")
+for name, x, y in rules:
+    proc = subprocess.run(["swaymsg", "output", name, "position", x, y],
+                          text=True, capture_output=True)
+    if proc.returncode:
+        print(f"swaym: failed to position {name}: {proc.stderr.strip()}", file=sys.stderr)
+        sys.exit(proc.returncode)
+print(f"Applied {len(rules)} monitor position rule(s) from {path}")
+PY
