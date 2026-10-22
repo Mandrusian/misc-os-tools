@@ -1,0 +1,19 @@
+#!/bin/sh
+# Move to the next/previous workspace in Sway's reported workspace order.
+set -eu
+DIRECTION=${1:-next}
+case "$DIRECTION" in next|prev) ;; *) echo "Usage: sway-swipe-ws [next|prev]" >&2; exit 2;; esac
+command -v swaymsg >/dev/null 2>&1 || { echo "swaymsg not found" >&2; exit 127; }
+workspaces=$(swaymsg -t get_workspaces -r) || { echo "Could not query Sway workspaces" >&2; exit 1; }
+printf '%s' "$workspaces" | python3 -c '
+import json,sys
+items=json.load(sys.stdin)
+if not items: sys.exit("No workspaces reported by Sway")
+focused=next((i for i,w in enumerate(items) if w.get("focused")),0)
+arg=sys.argv[1]
+idx=(focused + (1 if arg=="next" else -1)) % len(items)
+name=items[idx].get("name")
+if not name: sys.exit("Focused workspace has no name")
+import subprocess
+raise SystemExit(subprocess.run(["swaymsg","workspace",name]).returncode)
+' "$DIRECTION"
