@@ -184,15 +184,15 @@ def edit_output(stdscr, out):
                     if not current_w:
                         scale = float(settings["scale"] or 1)
                         current_w = round((current.get("current_mode") or {}).get("width", 0) / scale)
-                    # Normalize the chosen pair to a shared origin before placing
-                    # them side-by-side. Moving only the target can leave it far
-                    # away from the anchor after a previous layout/order change.
+                    # Sway's rect width/height are logical coordinates (already
+                    # account for output scale). Move only the selected output and
+                    # preserve the anchor's current position.
+                    ax = rect.get("x", 0)
+                    ay = rect.get("y", 0)
                     if pi == 0:  # target to the right of anchor
-                        apply_setting(anchor["name"], "position", "0 0")
-                        pos = f"{anchor_w} 0"
+                        pos = f"{ax + anchor_w} {ay}"
                     else:  # target to the left of anchor
-                        pos = "0 0"
-                        apply_setting(anchor["name"], "position", f"{current_w} 0")
+                        pos = f"{ax - current_w} {ay}"
                 apply_setting(name, "position", pos)
                 settings["position"] = pos
             elif pick == 3:
