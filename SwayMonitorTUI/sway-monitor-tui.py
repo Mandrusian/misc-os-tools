@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """External monitor settings TUI for Sway and SwayFX.
 
-Only external outputs are listed; internal eDP/LVDS/DSI panels are excluded.
+Only external outputs are listed for individual editing; internal eDP/LVDS/DSI
+panels are used as layout anchors when available.
 Requires Python 3, curses (standard library), and swaymsg. No root required.
 """
 import curses
@@ -114,6 +115,47 @@ def apply_setting(name, key, value):
         command("swaymsg", "output", name, "position", x, y)
 
 
+def auto_arrange_outputs():
+    """Place active external outputs in a row to the right of an internal/primary output.
+
+    Sway's rect dimensions are logical pixels, so this also handles mixed scaling.
+    On desktop setups without an internal panel, keep the primary (or first) output
+    as the anchor and arrange the remaining outputs to its right.
+    """
+    outputs = [o for o in get_outputs() if o.get("active", True) and o.get("name")]
+    if len(outputs) < 2:
+        raise RuntimeError("Enable at least two monitors before arranging them.")
+
+    internal = [o for o in outputs if o["name"].startswith(INTERNAL_PREFIXES)]
+    if internal:
+        anchor = internal[0]
+        targets = [o for o in outputs if not o["name"].startswith(INTERNAL_PREFIXES)]
+    else:
+        anchor = next((o for o in outputs if o.get("primary")), outputs[0])
+        targets = [o for o in outputs if o["name"] != anchor["name"]]
+
+    if not targets:
+        raise RuntimeError("No active external monitor was found to arrange.")
+
+    # Preserve Sway's output order, which is usually the most predictable order.
+    anchor_rect = anchor.get("rect") or {}
+    x = anchor_rect.get("x", 0) + anchor_rect.get("width", 0)
+    y = anchor_rect.get("y", 0)
+    arranged = []
+    for target in targets:
+        name = target["name"]
+        apply_setting(name, "position", f"{x} {y}")
+        arranged.append(name)
+        refreshed = next((o for o in get_outputs() if o.get("name") == name), target)
+        rect = refreshed.get("rect") or {}
+        width = rect.get("width", 0)
+        if not width:
+            mode = refreshed.get("current_mode") or {}
+            scale = float(refreshed.get("scale", 1) or 1)
+            width = round(mode.get("width", 0) / scale)
+        x += width
+
+
 def edit_output(stdscr, out):
     name = out["name"]
     settings = setting_from_output(out)
@@ -152,20 +194,28 @@ def edit_output(stdscr, out):
                 apply_setting(name, "scale", value)
                 settings["scale"] = value
             elif pick == 2:
-                choices = ["Right of another monitor", "Left of another monitor", "Keep current position"]
+                choices = ["Right of another monitor", "Left of another monitor",
+                           "Keep current position", "Automatically arrange all monitors"]
                 pi = choose(stdscr, f"Position {name}", choices)
                 if pi is None:
                     continue
-                # Include internal panels as positioning anchors, even though the TUI
-                # only offers external outputs for editing.
+                if pi == 3:
+                    auto_arrange_outputs()
+                    message(stdscr, ["Monitors arranged automatically.",
+                                     "Internal panels are used as the anchor when available.",
+                                     "Use 'Save these settings' on each monitor to keep the layout."])
+                    out = next((o for o in external_outputs() if o["name"] == name), out)
+                    settings = setting_from_output(out)
+                    continue
+
                 fresh = get_outputs()
                 current = next((o for o in fresh if o["name"] == name), out)
                 others = [o for o in fresh if o["name"] != name and o.get("active", True)]
                 if pi == 2:
                     pos = settings["position"]
                 elif not others:
-                    message(stdscr, ["No other active external monitor was found.",
-                                     "Connect or enable another external monitor first."])
+                    message(stdscr, ["No other active monitor was found.",
+                                     "Connect or enable another monitor first."])
                     continue
                 else:
                     anchor_labels = [
@@ -184,14 +234,11 @@ def edit_output(stdscr, out):
                     if not current_w:
                         scale = float(settings["scale"] or 1)
                         current_w = round((current.get("current_mode") or {}).get("width", 0) / scale)
-                    # Sway's rect width/height are logical coordinates (already
-                    # account for output scale). Move only the selected output and
-                    # preserve the anchor's current position.
                     ax = rect.get("x", 0)
                     ay = rect.get("y", 0)
-                    if pi == 0:  # target to the right of anchor
+                    if pi == 0:
                         pos = f"{ax + anchor_w} {ay}"
-                    else:  # target to the left of anchor
+                    else:
                         pos = f"{ax - current_w} {ay}"
                 apply_setting(name, "position", pos)
                 settings["position"] = pos
@@ -200,8 +247,7 @@ def edit_output(stdscr, out):
                 message(stdscr, [f"Saved settings for {name}.", f"Config: {CONFIG_FILE}"])
                 continue
             message(stdscr, [f"Applied to {name}.", f"Mode: {settings['mode'] or 'unchanged'}",
-                              f"Scale: {settings['scale']}x", f"Position: {settings['position']}",
-                              "The built-in laptop panel is excluded from this tool."])
+                              f"Scale: {settings['scale']}x", f"Position: {settings['position']}"])
             out = next((o for o in external_outputs() if o["name"] == name), out)
         except Exception as exc:
             message(stdscr, [f"Couldn't update {name}:", str(exc)])
@@ -218,11 +264,20 @@ def main(stdscr):
         labels = [
             f'{o["name"]} — {mode_label(o.get("current_mode") or {})} · scale {o.get("scale", 1)}x'
             for o in outs
-        ] + ["Refresh output list", "Quit"]
-        pick = choose(stdscr, "SwayFX external monitor settings", labels)
+        ] + ["Refresh output list", "Auto arrange all active monitors", "Quit"]
+        pick = choose(stdscr, "SwayFX monitor settings", labels)
         if pick is None or pick == len(labels) - 1:
             return
         if pick == len(outs):
+            continue
+        if pick == len(outs) + 1:
+            try:
+                auto_arrange_outputs()
+                message(stdscr, ["Monitors arranged automatically.",
+                                 "Internal panels are used as the anchor when available.",
+                                 "Use 'Save these settings' on each monitor to keep the layout."])
+            except Exception as exc:
+                message(stdscr, ["Couldn't arrange monitors:", str(exc)])
             continue
         edit_output(stdscr, outs[pick])
 
