@@ -42,3 +42,21 @@ wm/sway/swayshortcuts --raw
 ```
 
 It follows `include` directives and reports `bindsym`/`bindcode` lines. It does not execute config commands, resolve all Sway variables, or fully interpret complex mode/block syntax; inspect the original config for ambiguous entries.
+
+### `swaym`
+
+Restore output positions saved in `~/.config/sway/monitors.conf`, useful after a compositor reload. It does not hardcode monitor names or dimensions.
+
+Install it for your user:
+
+```sh
+install -Dm755 wm/sway/swaym ~/.local/bin/swaym
+```
+
+Arrange your monitors correctly, then save their current positions:
+
+```sh
+swaym --save-current
+```
+
+Run `swaym` to reapply the saved positions. Ensure your Sway config includes `~/.config/sway/monitors.conf` so the layout also loads during compositor startup/reload. See [the full swaym guide](swaym.md).
