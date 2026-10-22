@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Copy stdin to a remote Linux Wayland clipboard over SSH without shell interpolation."""
+import argparse
+import base64
+import subprocess
+import sys
+
+REMOTE_PY = r'''import base64, os, subprocess, sys
+payload = base64.b64decode(sys.stdin.buffer.read())
+env = os.environ.copy()
+# SSH normally has no graphical-session variables; import them from a running compositor.
+pid = None
+for name in ("sway", "kwin_wayland", "plasmashell", "gnome-shell", "Hyprland"):
+    try:
+        out = subprocess.run(["pgrep", "-n", "-x", name], capture_output=True, text=True)
+        if out.returncode == 0 and out.stdout.strip():
+            pid = out.stdout.strip().splitlines()[-1]
+            break
+    except FileNotFoundError:
+        pass
+if pid:
+    try:
+        raw = open(f"/proc/{pid}/environ", "rb").read().split(b"\0")
+        for item in raw:
+            if b"=" in item:
+                k, v = item.split(b"=", 1)
+                key = k.decode("utf-8", "ignore")
+                if key in {"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}:
+                    env[key] = v.decode("utf-8", "ignore")
+    except OSError:
+        pass
+if not env.get("XDG_RUNTIME_DIR"):
+    env["XDG_RUNTIME_DIR"] = f"/run/user/{os.getuid()}"
+if not env.get("WAYLAND_DISPLAY") and not env.get("DISPLAY"):
+    sys.exit("could not find a graphical session environment")
+try:
+    result = subprocess.run(["wl-copy"], input=payload, env=env, check=False)
+except FileNotFoundError:
+    sys.exit("wl-copy is not installed on the remote host")
+sys.exit(result.returncode)
+'''
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    args = ap.parse_args()
+    payload = sys.stdin.buffer.read()
+    if not payload:
+        ap.error("no input received; pipe text into rclip")
+    encoded = base64.b64encode(payload)
+    wrapper = "import base64,sys; exec(compile(base64.b64decode(sys.argv[1]), '<rclip>', 'exec'))"
+    remote_command = "python3 -c " + __import__("shlex").quote(wrapper) + " " + __import__("shlex").quote(base64.b64encode(REMOTE_PY.encode()).decode())
+    proc = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", args.host, remote_command],
+                          input=encoded, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if proc.returncode:
+        sys.stderr.write(proc.stderr.decode("utf-8", "replace") or "remote clipboard command failed\n")
+        return proc.returncode
+    print("Copied stdin to the remote clipboard.")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

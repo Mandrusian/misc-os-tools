@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+"""Best-effort wake/unlock helper for a remote Linux desktop over SSH."""
+import argparse
+import subprocess
+import sys
+
+REMOTE_SCRIPT = r'''set -u
+# Find graphical environment variables from a running compositor/session process.
+pid=""
+for name in sway kwin_wayland plasmashell gnome-shell Hyprland; do
+    pid=$(pgrep -n -x "$name" 2>/dev/null || true)
+    [ -n "$pid" ] && break
+done
+if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
+    while IFS= read -r -d '' item; do
+        case "$item" in
+            WAYLAND_DISPLAY=*|DISPLAY=*|XAUTHORITY=*|DBUS_SESSION_BUS_ADDRESS=*|XDG_RUNTIME_DIR=*) export "$item";;
+        esac
+    done < "/proc/$pid/environ"
+fi
+command -v xset >/dev/null 2>&1 && xset dpms force on >/dev/null 2>&1 || true
+loginctl unlock-session >/dev/null 2>&1 || true
+if command -v qdbus6 >/dev/null 2>&1; then
+    qdbus6 org.kde.screensaver /ScreenSaver org.freedesktop.ScreenSaver.SetActive false >/dev/null 2>&1 || true
+elif command -v qdbus >/dev/null 2>&1; then
+    qdbus org.kde.screensaver /ScreenSaver org.freedesktop.ScreenSaver.SetActive false >/dev/null 2>&1 || true
+fi
+'''
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    args = ap.parse_args()
+    try:
+        result = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", args.host, "bash -s"],
+                                input=REMOTE_SCRIPT, text=True, capture_output=True, timeout=20)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"rwake: {exc}", file=sys.stderr)
+        return 1
+    if result.returncode:
+        print(result.stderr.strip() or f"ssh exited with status {result.returncode}", file=sys.stderr)
+        return result.returncode
+    print(f"Wake/unlock commands sent to {args.host} (desktop support varies by compositor).")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+"""Open an interactive SSH session to a host alias; never type or unlock passwords."""
+import argparse
+import os
+import shutil
+import sys
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    args = ap.parse_args()
+    if shutil.which("ssh") is None:
+        ap.error("ssh is not installed")
+    os.execvp("ssh", ["ssh", "-t", args.host])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except OSError as exc:
+        print(f"rlogin: {exc}", file=sys.stderr)
+        raise SystemExit(1)

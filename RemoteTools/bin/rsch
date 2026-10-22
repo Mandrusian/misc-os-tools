@@ -1,0 +1,171 @@
+#!/usr/bin/env python3
+import argparse, json, os, shlex, subprocess, sys, time
+from pathlib import Path
+
+SHOTS = Path.home() / ".rsch"
+
+SSH_OPTS = [
+    "ssh", "-T", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+    "-o", "ControlMaster=auto", "-o", f"ControlPath={os.path.expanduser('~/.ssh/cm-misc-tools-%r@%h:%p')}",
+    "-o", "ControlPersist=60",
+]
+
+# Wayland native (grim) -> KDE (spectacle) -> X11 (maim/scrot)
+LINUX_SCRIPT = r'''
+OUT="$1"
+[ -n "$OUT" ] || { echo "no output path" >&2; exit 2; }
+
+# SSH does not normally inherit the desktop environment. Copy the relevant
+# variables from a running compositor/session process when one is available.
+pid=""
+for name in sway kwin_wayland plasmashell gnome-shell Hyprland; do
+    pid=$(pgrep -n -x "$name" 2>/dev/null || true)
+    [ -n "$pid" ] && break
+done
+if [ -n "$pid" ] && [ -r "/proc/$pid/environ" ]; then
+    while IFS= read -r -d '' item; do
+        case "$item" in
+            WAYLAND_DISPLAY=*|DISPLAY=*|XAUTHORITY=*|DBUS_SESSION_BUS_ADDRESS=*|XDG_RUNTIME_DIR=*) export "$item";;
+        esac
+    done < "/proc/$pid/environ"
+fi
+
+# 1. Try grim (wlroots: Sway, Hyprland, Niri)
+if command -v grim >/dev/null 2>&1; then
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    if [ -z "$WAYLAND_DISPLAY" ]; then
+        for w in $XDG_RUNTIME_DIR/wayland-*; do
+            [ -S "$w" ] && export WAYLAND_DISPLAY="$(basename "$w")" && break
+        done
+    fi
+    grim "$OUT" >/dev/null 2>&1 || true
+fi
+
+# 2. Try spectacle (KDE Plasma)
+if [ ! -s "$OUT" ] && command -v spectacle >/dev/null 2>&1; then
+    spectacle -b -f -o "$OUT" >/dev/null 2>&1 || true
+    sleep 0.5 # Wait for background write to finish
+fi
+
+# 3. Try X11 tools (maim, scrot)
+if [ ! -s "$OUT" ]; then
+    if   command -v maim  >/dev/null 2>&1; then maim -u "$OUT"
+    elif command -v scrot >/dev/null 2>&1; then scrot -o "$OUT"
+    else echo "no screenshot tool" >&2; exit 3
+    fi
+fi
+
+test -s "$OUT" || { echo "empty capture" >&2; exit 4; }
+'''
+
+DARWIN_SCRIPT = r'''
+set -e
+OUT="$1"
+[ -n "$OUT" ] || { echo "no output path" >&2; exit 2; }
+/usr/sbin/screencapture -x -t png "$OUT"
+test -s "$OUT" || { echo "empty capture" >&2; exit 4; }
+'''
+
+
+def timestamp(): return time.strftime("%Y%m%d-%H%M%S")
+def is_local(peer_name): return peer_name in (None, "", "local", "self")
+
+def _ssh(host, script, remote_path, timeout=20):
+    cmd = SSH_OPTS + [host, "bash -s -- " + shlex.quote(remote_path)]
+    return subprocess.run(cmd, input=script, text=True, capture_output=True, timeout=timeout)
+
+def _local_capture(script, local_path):
+    return subprocess.run(["bash", "-s", "--", str(local_path)], input=script, text=True, capture_output=True)
+
+def capture_local(dest_tmp):
+    r = _local_capture(DARWIN_SCRIPT if sys.platform == "darwin" else LINUX_SCRIPT, dest_tmp)
+    return r.returncode == 0, (r.stderr or "").strip()
+
+def capture_remote(host, remote_path):
+    probe = subprocess.run(SSH_OPTS + [host, "uname -s"], capture_output=True, text=True, timeout=10)
+    if probe.returncode != 0: return False, (probe.stderr or "ssh failed").strip()
+    script = DARWIN_SCRIPT if probe.stdout.strip() == "Darwin" else LINUX_SCRIPT
+    r = _ssh(host, script, remote_path)
+    return (r.returncode == 0), (r.stderr or "").strip()
+
+def pull_file(host, remote_path, local_path):
+    try:
+        with open(local_path, "wb") as fh:
+            r = subprocess.run(SSH_OPTS + [host, f"cat {shlex.quote(remote_path)}"], stdout=fh, stderr=subprocess.PIPE, timeout=30)
+        return (r.returncode == 0), (r.stderr or b"").decode("utf-8", "replace").strip()
+    except Exception as e: return False, str(e)
+
+def cleanup_remote(host, remote_path):
+    try: subprocess.run(SSH_OPTS + [host, f"rm -f {shlex.quote(remote_path)}"], capture_output=True, timeout=8)
+    except Exception: pass
+
+def store(local_tmp, peer_label):
+    SHOTS.mkdir(parents=True, exist_ok=True)
+    keep = SHOTS / f"{peer_label}-{timestamp()}.png"
+    data = Path(local_tmp).read_bytes()
+    keep.write_bytes(data)
+    (SHOTS / "last.png").write_bytes(data)
+    return keep, len(data)
+
+def open_file(path):
+    if sys.platform == "darwin": subprocess.run(["open", str(path)], check=False)
+    else:
+        for viewer in ("imv", "loupe", "eog", "gwenview", "feh", "xdg-open"):
+            if subprocess.run(["bash", "-c", f"command -v {viewer}"], capture_output=True).returncode == 0:
+                subprocess.Popen([viewer, str(path)]); return
+        print("no viewer found", file=sys.stderr)
+
+def capture_once(peer_name, do_open=False):
+    peer_label = "local" if is_local(peer_name) else peer_name
+    tmp = Path(f"/tmp/rsch-local-{os.getpid()}.png")
+    if tmp.exists(): tmp.unlink()
+
+    if is_local(peer_name):
+        ok, err = capture_local(tmp)
+        if not ok: print(f"capture failed: {err}", file=sys.stderr); return 1
+    else:
+        if not peer_name or peer_name in ("local", "self"):
+            print("supply an SSH host alias, or use local", file=sys.stderr); return 2
+        remote_path = f"/tmp/rsch-{timestamp()}-{os.getpid()}.png"
+        ok, err = capture_remote(peer_name, remote_path)
+        if not ok: print(f"remote capture failed: {err}", file=sys.stderr); return 3
+        ok, err = pull_file(peer_name, remote_path, tmp)
+        cleanup_remote(peer_name, remote_path)
+        if not ok: print(f"pull failed: {err}", file=sys.stderr); return 4
+
+    keep, size = store(tmp, peer_label)
+    try: tmp.unlink()
+    except Exception: pass
+    if size < 15000 and peer_label != "local": print(f"warn: capture is only {size} bytes", file=sys.stderr)
+    print(f"{keep}  ({size // 1024} KB)")
+    if do_open: open_file(keep)
+    return 0
+
+def list_recent():
+    if not SHOTS.exists():
+        print("no screenshots yet")
+        return 0
+    files = sorted(SHOTS.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = [f for f in files if f.name != "last.png"]
+    if not files:
+        print("no screenshots yet")
+        return 0
+    for f in files:
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(f.stat().st_mtime))
+        print(f"{ts}  {f.stat().st_size // 1024:>5} KB  {f}")
+    return 0
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("peer", nargs="?", default="local", help="local or an SSH host alias from ~/.ssh/config")
+    ap.add_argument("-o", "--open", action="store_true")
+    ap.add_argument("-l", "--l", "-list", "--list", action="store_true", dest="list_shots")
+    args = ap.parse_args()
+
+    if args.list_shots:
+        return list_recent()
+
+    return capture_once(args.peer, args.open)
+
+if __name__ == "__main__": sys.exit(main())
