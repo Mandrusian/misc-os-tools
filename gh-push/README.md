@@ -31,6 +31,7 @@ gh-push -C ~/src/my-project
 | `a` | Confirm and stage all changes (`git add -A`) |
 | `c` | Enter a commit message and commit staged changes |
 | `p` | Confirm and push the current branch |
+| `u` | Fetch and safely sync with upstream |
 | `f` | Fetch from configured remotes |
 | `l` | Show recent commits |
 | `r` | Refresh status |
@@ -38,7 +39,8 @@ gh-push -C ~/src/my-project
 
 ## Safety notes
 
-- It never force-pushes and does not automatically pull, rebase, or merge.
+- It never force-pushes. The explicit `u` action fetches and, only with a clean working tree, fast-forwards a branch that is only behind or rebases local commits if the branches have diverged.
+- A sync requires confirmation. If the tree has staged, unstaged, or untracked changes, commit or stash them first. If a rebase conflicts, resolve the conflicts in a terminal and run `git rebase --continue` or `git rebase --abort`.
 - Pushing sends commits only. Unstaged and uncommitted changes are not included.
 - Stage/unstage works at whole-file level. Unstaging a partially staged file removes its partial staging while leaving the working-tree edits intact.
 - Files with unresolved merge conflicts cannot be staged through the UI; resolve them in an editor first.
