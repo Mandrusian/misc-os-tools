@@ -1,6 +1,6 @@
-# RemoteTools and Sway helpers
+# RemoteTools
 
-A collection of standalone Linux/Sway utilities and SSH-based remote helpers. These tools are generalised for public use: remote targets are supplied as SSH aliases, rather than embedding a personal hostname, IP address, username, or desktop-session path.
+A collection of SSH-based utilities for working with remote Linux hosts. Remote targets are supplied as SSH aliases, rather than embedding a personal hostname, IP address, username, or desktop-session path.
 
 ## Setup
 
@@ -35,11 +35,10 @@ A collection of standalone Linux/Sway utilities and SSH-based remote helpers. Th
 | `rspy` | KDE Plasma VNC via SSH tunnel | [README](docs/rspy.md) |
 | `rtui` | Curses launcher for remote tools | [README](docs/rtui.md) |
 | `rwake` | Best-effort remote display wake | [README](docs/rwake.md) |
-| `sway-edge-snap.py` | Floating-window edge snapping | [README](docs/sway-edge-snap.py.md) |
-| `sway-swipe-ws` | Next/previous workspace helper | [README](docs/sway-swipe-ws.md) |
-| `swayshortcuts` | Parse bindings from user Sway config | [README](docs/swayshortcuts.md) |
 
-`SwayMonitorTUI` is maintained in the repository's existing [`SwayMonitorTUI/`](../SwayMonitorTUI/) directory; the duplicate copy from the review archive is intentionally not added a second time. The `rsys` diagnostic/admin TUI is also intentionally not published in this pass because it contains machine-specific administrative/session actions that need a separate safety review.
+The Sway/SwayFX-specific tools live separately in [`wm/sway/`](../wm/sway/). The `SwayMonitorTUI` utility is maintained in [`SwayMonitorTUI/`](../SwayMonitorTUI/).
+
+The `rsys` diagnostic/admin TUI is intentionally not published in this pass because it contains machine-specific administrative/session actions that need a separate safety review.
 
 ## Validation
 
