@@ -30,7 +30,7 @@ def read_config(path, seen=None):
             continue
         m = re.match(r"^include\s+(.+?)\s*$", stripped)
         if m:
-            inc = m.group(1).strip().strip('"\\'')
+            inc = m.group(1).strip().strip("\"'")
             inc = os.path.expandvars(os.path.expanduser(inc))
             if not os.path.isabs(inc):
                 inc = str(path.parent / inc)
