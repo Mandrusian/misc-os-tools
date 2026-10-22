@@ -1,0 +1,26 @@
+name: gh-push tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gh-push/**"
+      - ".github/workflows/gh-push-tests.yml"
+  pull_request:
+    paths:
+      - "gh-push/**"
+      - ".github/workflows/gh-push-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Check Python syntax
+        run: python3 -m py_compile gh-push/gh-push gh-push/tests/test_gh_push.py
+      - name: Run tests
+        run: python3 -m unittest discover -s gh-push/tests -v
