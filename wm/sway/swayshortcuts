@@ -4,16 +4,13 @@ import argparse
 import glob
 import os
 import re
-import shlex
-import subprocess
 from pathlib import Path
 
 MODS = {"$mod": "Mod", "Mod4": "Super", "Mod1": "Alt", "Control": "Ctrl", "Ctrl": "Ctrl", "Shift": "Shift", "Mod2": "Mod2", "Mod3": "Mod3", "Mod5": "Mod5"}
 
 
 def config_path():
-    candidates = [Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "sway/config",
-                  Path("/etc/sway/config")]
+    candidates = [Path(os.environ.get("XDG_CONFIG_HOME", "~/.config")).expanduser() / "sway/config", Path("/etc/sway/config")]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
@@ -31,10 +28,9 @@ def read_config(path, seen=None):
         stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        # Expand simple quoted or unquoted include paths; shell commands are not executed.
         m = re.match(r"^include\s+(.+?)\s*$", stripped)
         if m:
-            inc = m.group(1).strip().strip('"\'')
+            inc = m.group(1).strip().strip("\"'")
             inc = os.path.expandvars(os.path.expanduser(inc))
             if not os.path.isabs(inc):
                 inc = str(path.parent / inc)
@@ -53,7 +49,7 @@ def main():
     args = ap.parse_args()
     try:
         lines = read_config(args.config or config_path())
-    except (OSError, FileNotFoundError) as exc:
+    except OSError as exc:
         ap.error(str(exc))
     mode = "default"
     found = []
@@ -76,18 +72,19 @@ def main():
             for old, new in MODS.items():
                 readable = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, readable)
             readable = f"{readable:<26} {command}"
-        found.append((mode, readable, path.name))
+        found.append((mode, readable))
     if not found:
         print("No bindsym/bindcode bindings found.")
         return 0
     print("\033[1mSway key bindings\033[0m")
     last_mode = None
-    for mode, binding, _source in sorted(found, key=lambda x: (x[0] != "default", x[0].lower(), x[1].lower())):
+    for mode, binding in sorted(found, key=lambda x: (x[0] != "default", x[0].lower(), x[1].lower())):
         if mode != last_mode:
             print(f"\n\033[1m[{mode}]\033[0m")
             last_mode = mode
         print("  " + binding)
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

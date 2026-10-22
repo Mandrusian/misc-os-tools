@@ -1,15 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1080 1080">
-  <defs>
-    <style>
-      .cls-1{font-family:&apos;URW Gothic&apos;, sans-serif;font-size:281;fill:#000000;text-anchor:middle}
-      .cls-2{fill:#22b573}
-      .cls-3{font-family:&apos;URW Gothic&apos;, sans-serif;font-size:48;font-style:italic;fill:#000000;text-anchor:middle}
-    </style>
-  </defs>
-  <title>Misc OS Tools by Ari</title>
-  <g id="Layer_1" data-name="Layer 1">
-    <text transform="matrix(1 0 0 1 540 269.959)" x="0" y="0" xml:space="preserve" class="cls-1"><tspan x="0" y="0">misc</tspan><tspan x="0" y="337.2" class="cls-2">os</tspan><tspan x="0" y="674.4">tools</tspan></text>
-    <text transform="matrix(1 0 0 1 540 383.376)" x="0" y="0" xml:space="preserve" class="cls-3"><tspan x="0" y="0">by</tspan><tspan x="0" y="345.6">ari</tspan></text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080" role="img" aria-labelledby="title desc">
+  <title id="title">Misc OS Tools by Ari</title>
+  <desc id="desc">Black square with a large white circle. The words misc and tools are black, OS is green, and by ari is italic black text.</desc>
+  <rect width="1080" height="1080" fill="#000"/>
+  <circle cx="540" cy="540" r="539" fill="#fff"/>
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle" fill="#000">
+    <text x="540" y="268" font-size="238" font-weight="300" letter-spacing="-5">misc</text>
+    <text x="540" y="385" font-size="48" font-style="italic">by</text>
+    <text x="540" y="610" font-size="220" font-weight="300" letter-spacing="2" fill="#22b573">OS</text>
+    <text x="540" y="730" font-size="48" font-style="italic">ari</text>
+    <text x="540" y="945" font-size="225" font-weight="300" letter-spacing="-3">tools</text>
   </g>
 </svg>

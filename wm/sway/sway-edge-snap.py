@@ -98,10 +98,9 @@ def main():
                 target = (50, 100, 50, 0)
             elif top:
                 target = (100, 100, 0, 0)
-            if target:
-                if snap(cid, *target):
-                    last_snap[cid] = time.monotonic()
-                    print(f"Snapped con_id={cid} to {target}", flush=True)
+            if target and snap(cid, *target):
+                last_snap[cid] = time.monotonic()
+                print(f"Snapped con_id={cid} to {target}", flush=True)
             time.sleep(POLL)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError):
             time.sleep(0.25)

@@ -14,7 +14,6 @@ arg=sys.argv[1]
 idx=(focused + (1 if arg=="next" else -1)) % len(items)
 name=items[idx].get("name")
 if not name: sys.exit("Focused workspace has no name")
-# Use swaymsg argv, not shell evaluation, for the selected workspace name.
 import subprocess
 raise SystemExit(subprocess.run(["swaymsg","workspace",name]).returncode)
 ' "$DIRECTION"
