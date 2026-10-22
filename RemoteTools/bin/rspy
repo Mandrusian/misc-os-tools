@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Launch a KDE Plasma VNC server through an SSH tunnel."""
+import argparse
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+
+PORT = 5900
+REMOTE_START = r'''import os, subprocess, sys
+opts = sys.argv[1].split()
+pid = sys.argv[2]
+env = os.environ.copy()
+try:
+    for item in open(f"/proc/{pid}/environ", "rb").read().split(bytes([0])):
+        if b"=" in item:
+            k, v = item.split(b"=", 1)
+            key = k.decode(errors="ignore")
+            if key in {"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}:
+                env[key] = v.decode(errors="ignore")
+except OSError:
+    pass
+with open("/tmp/w0vncserver-rspy.log", "ab") as log:
+    subprocess.Popen(["w0vncserver"] + opts, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
+'''
+
+
+def step(n, message):
+    print(f"\033[36m[{n}]\033[0m {message}")
+
+
+def run_ssh(host, command, timeout=20):
+    return subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", host, command],
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    ap.add_argument("-no", "--no-input", action="store_true", help="view-only mode")
+    ap.add_argument("-f", "--fast", action="store_true", help="prefer lower-quality/high-frame-rate settings")
+    args = ap.parse_args()
+    for tool in ("ssh", "vncviewer"):
+        if shutil.which(tool) is None:
+            ap.error(f"{tool} is required locally")
+    host = args.host
+    step("1/4", f"Checking KDE Plasma on {host}...")
+    check = run_ssh(host, "command -v w0vncserver >/dev/null 2>&1 && pgrep -x plasmashell >/dev/null")
+    if check.returncode:
+        print("rspy requires KDE Plasma, w0vncserver, and an active graphical session on the remote host.", file=sys.stderr)
+        return 1
+
+    step("2/4", "Starting or reusing the remote VNC server...")
+    opts = ["-SecurityTypes", "None", "-localhost", "yes"]
+    if args.no_input:
+        opts.extend(["-AcceptKeyEvents=0", "-AcceptPointerEvents=0"])
+    opts.append("-FrameRate=60" if args.fast else "-FrameRate=30")
+    opts_arg = shlex.quote(" ".join(opts))
+    py_arg = shlex.quote(REMOTE_START)
+    remote_cmd = (
+        "if pgrep -x w0vncserver >/dev/null 2>&1; then echo EXISTING; exit 0; fi; "
+        "pid=$(pgrep -n -x plasmashell) || exit 1; "
+        f"python3 -c {py_arg} {opts_arg} \"$pid\"; sleep 1; pgrep -x w0vncserver >/dev/null"
+    )
+    started = run_ssh(host, remote_cmd)
+    if started.returncode:
+        print(started.stderr.strip() or "Could not start w0vncserver; inspect /tmp/w0vncserver-rspy.log remotely.", file=sys.stderr)
+        return 1
+    started_server = "EXISTING" not in started.stdout
+
+    step("3/4", "Opening SSH tunnel...")
+    tunnel = subprocess.Popen(["ssh", "-N", "-o", "BatchMode=yes", "-L", f"{PORT}:localhost:{PORT}", host],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    time.sleep(0.7)
+    if tunnel.poll() is not None:
+        print("SSH tunnel failed to start.", file=sys.stderr)
+        if started_server:
+            run_ssh(host, "pkill -x w0vncserver 2>/dev/null || true")
+        return 1
+
+    step("4/4", "Launching VNC viewer (close it to finish)...")
+    viewer = ["vncviewer"]
+    if args.no_input:
+        viewer.append("-ViewOnly")
+    if args.fast:
+        viewer.extend(["-Depth=16", "-Quality=1", "-CompressLevel=1", "-PreferredEncoding=Tight"])
+    viewer.append(f"localhost:{PORT}")
+    try:
+        return subprocess.run(viewer, check=False).returncode
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        tunnel.terminate()
+        try:
+            tunnel.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            tunnel.kill()
+        if started_server:
+            run_ssh(host, "pkill -x w0vncserver 2>/dev/null || true")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

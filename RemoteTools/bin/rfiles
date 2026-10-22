@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+import os, sys, subprocess, curses, json, time, threading, base64, argparse, shlex
+
+REMOTE = ""
+SSH_OPTS = [
+    "-o", "ControlMaster=auto", "-o", "ControlPath=/tmp/rfiles-ssh-%r@%h:%p",
+    "-o", "ControlPersist=600", "-o", "ConnectTimeout=5", "-o", "BatchMode=yes",
+]
+
+LIST_SCRIPT = '''
+import os, stat, json, sys
+path = os.path.abspath(os.path.expanduser(sys.argv[1] if len(sys.argv) > 1 else "~"))
+try:
+    entries = []
+    for name in sorted(os.listdir(path)):
+        full = os.path.join(path, name)
+        try:
+            st = os.stat(full, follow_symlinks=False)
+            entries.append({"name": name, "is_dir": stat.S_ISDIR(st.st_mode), "is_link": stat.S_ISLNK(st.st_mode), "size": st.st_size})
+        except: pass
+    print(json.dumps({"path": path, "entries": entries, "ok": True}))
+except Exception as e:
+    print(json.dumps({"ok": False, "error": str(e)}))
+'''
+
+def shq(s): return "'" + s.replace("'", "'\\''") + "'"
+
+def ssh(cmd, timeout=10, stdin_data=None):
+    try:
+        r = subprocess.run(["ssh"] + SSH_OPTS + [REMOTE, cmd], input=stdin_data, capture_output=True, text=True, timeout=timeout)
+        return r.returncode, r.stdout, r.stderr
+    except Exception as e: return -1, "", str(e)
+
+def list_dir(path):
+    rc, out, err = ssh(f"python3 - {shq(path)}", stdin_data=LIST_SCRIPT)
+    if rc != 0 or not out.strip(): return None, err.strip() or "no output"
+    try:
+        data = json.loads(out.strip())
+        if not data.get("ok"): return None, data.get("error", "unknown")
+        return data, None
+    except Exception as e: return None, f"parse error: {e}"
+
+def human_size(n):
+    f = float(n)
+    for unit in ["B", "K", "M", "G", "T"]:
+        if f < 1024: return f"{f:.0f} {unit}" if unit == "B" else f"{f:.1f} {unit}"
+        f /= 1024
+    return f"{f:.1f} P"
+
+class PreviewWorker(threading.Thread):
+    def __init__(self):
+        super().__init__(daemon=True)
+        self.current_target = None; self.result = ("text", "Loading...")
+        self.lock = threading.Lock(); self.requested_path = None
+
+    def request(self, cur_path, entry):
+        with self.lock: self.requested_path = os.path.join(cur_path, entry["name"])
+
+    def run(self):
+        while True:
+            time.sleep(0.05)
+            with self.lock:
+                target = self.requested_path; self.requested_path = None
+            if not target or target == self.current_target: continue
+            self.current_target = target; self.result = ("text", "Loading...")
+            name = os.path.basename(target)
+            is_dir = target.endswith("/") or name in ("Documents", "Downloads", "Music", "Desktop")
+            rc, out, _ = ssh(f"stat -c '%F|%s' {shq(target)}")
+            if rc == 0 and "|" in out:
+                ftype, fsize = out.strip().split("|", 1)
+                is_dir = "directory" in ftype; size = int(fsize)
+            else: is_dir = False; size = 0
+            if is_dir:
+                d, err = list_dir(target)
+                if d:
+                    items = d["entries"][:10]
+                    lines = [f"[D] {e['name']}" for e in items]
+                    if len(d["entries"]) > 10: lines.append(f"... ({len(d['entries']) - 10} more)")
+                    res = ("text", "\n".join(lines) if lines else "(empty)")
+                else: res = ("text", f"(error: {err})")
+            elif size > 1024 * 1024: res = ("binary", f"{human_size(size)}\n(large file)")
+            else:
+                rc, out, _ = ssh(f"head -c 2048 {shq(target)} 2>/dev/null | base64 -w0")
+                if rc == 0 and out.strip():
+                    try:
+                        data = base64.b64decode(out.strip())
+                        try: text = data.decode("utf-8"); res = ("text", text)
+                        except UnicodeDecodeError: res = ("binary", f"{human_size(size)} (binary)")
+                    except: res = ("binary", "(error decoding)")
+                else: res = ("binary", "(cannot read)")
+            if self.current_target == target: self.result = res
+
+def draw(stdscr, cur_path, entries, selected_idx, status, preview, loading):
+    stdscr.erase()
+    try: sz = os.get_terminal_size(); rows, cols = sz.lines, sz.columns
+    except OSError: rows, cols = 24, 80
+    if rows < 10 or cols < 60: stdscr.refresh(); return
+
+    title = f" rfiles — {REMOTE} "
+    stdscr.addstr(0, 0, title.center(cols - 1, " "), curses.color_pair(1) | curses.A_BOLD)
+    stdscr.addstr(1, 1, f" {cur_path}"[:cols-2], curses.color_pair(2))
+
+    list_w = int(cols * 0.60); prev_x = list_w + 1; prev_w = cols - prev_x - 1
+    stdscr.addstr(3, 2, "Name".ljust(list_w - 14), curses.A_BOLD | curses.A_UNDERLINE)
+    stdscr.addstr(3, list_w - 10, "Size".rjust(8), curses.A_BOLD | curses.A_UNDERLINE)
+    if prev_w > 10: stdscr.addstr(3, prev_x, "Preview".ljust(prev_w - 1), curses.A_BOLD | curses.A_UNDERLINE)
+
+    for y in range(3, rows - 2):
+        try: stdscr.addstr(y, list_w, "|", curses.A_DIM)
+        except curses.error: pass
+
+    list_top, list_bottom = 4, rows - 3; list_h = max(1, list_bottom - list_top)
+    scroll = max(0, selected_idx - list_h + 1)
+    for i in range(list_h):
+        idx = scroll + i
+        if idx >= len(entries): break
+        e = entries[idx]; icon = "[D] " if e["is_dir"] else ("[L] " if e["is_link"] else "    ")
+        name = e["name"]; avail = list_w - 12
+        if len(name) > avail: name = name[:avail-3] + "..."
+        prefix = icon + name; size_str = "DIR" if e["is_dir"] else human_size(e["size"])
+        if idx == selected_idx:
+            line = (prefix.ljust(list_w - 10) + size_str.rjust(8))[:list_w-1]
+            stdscr.addstr(list_top + i, 1, line, curses.A_REVERSE)
+        else:
+            color = curses.color_pair(4) if e["is_dir"] else curses.A_NORMAL
+            try:
+                stdscr.addstr(list_top + i, 1, prefix.ljust(list_w - 10), color)
+                stdscr.addstr(list_top + i, list_w - 9, size_str.rjust(8))
+            except curses.error: pass
+
+    if prev_w > 10 and preview:
+        _, content = preview; plines = content.split("\n")[:list_h]
+        for i, line in enumerate(plines):
+            try:
+                attr = curses.A_DIM | (curses.A_ITALIC if loading else 0)
+                stdscr.addstr(list_top + i, prev_x, line[:prev_w-1], attr)
+            except curses.error: pass
+
+    if status:
+        try: stdscr.addstr(rows - 2, 1, status[:cols-2], curses.color_pair(2))
+        except curses.error: pass
+
+    footer = " Up/Down: Nav | Enter: Open | d: Download | u: Upload | Del: Delete | r: Rename | o: xdg-open | q: Quit "
+    try: stdscr.addstr(rows - 1, 0, footer.center(cols - 1, " "), curses.color_pair(3))
+    except curses.error: pass
+    stdscr.refresh()
+
+def prompt_curses(prompt_text):
+    curses.def_prog_mode(); curses.endwin()
+    try: return input(prompt_text)
+    except (EOFError, KeyboardInterrupt): return None
+    finally: curses.reset_prog_mode()
+
+def show_msg(stdscr, lines):
+    stdscr.erase()
+    for i, line in enumerate(lines):
+        try: stdscr.addstr(2 + i, 2, line[:80])
+        except curses.error: pass
+    try: stdscr.addstr(len(lines) + 3, 2, "Press any key...", curses.A_DIM)
+    except curses.error: pass
+    stdscr.refresh(); stdscr.getch()
+
+def main(stdscr):
+    curses.curs_set(0); curses.start_color()
+    try: curses.use_default_colors(); bg = -1
+    except curses.error: bg = curses.COLOR_BLACK
+    curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_BLUE)
+    curses.init_pair(2, curses.COLOR_CYAN, bg)
+    curses.init_pair(3, curses.COLOR_BLACK, curses.COLOR_WHITE)
+    curses.init_pair(4, curses.COLOR_YELLOW, bg)
+
+    worker = PreviewWorker(); worker.start()
+    cur_path = os.environ.get("RFILES_START", "~")
+    status = f"Connected to {REMOTE}"
+
+    stdscr.addstr(2, 2, "Connecting...", curses.A_BOLD); stdscr.refresh()
+    data, err = list_dir(cur_path)
+    if not data: show_msg(stdscr, [f"Error loading {cur_path}:", str(err), "Press any key..."]); return
+
+    cur_path = data["path"]; entries = data["entries"]; selected_idx = 0; last_preview_key = None
+    stdscr.timeout(50); stdscr.keypad(True)
+
+    while True:
+        if entries:
+            key = (cur_path, entries[selected_idx]["name"])
+            if key != last_preview_key: worker.request(cur_path, entries[selected_idx]); last_preview_key = key
+        draw(stdscr, cur_path, entries, selected_idx, status, worker.result, worker.current_target != worker.requested_path and worker.requested_path is not None)
+        ch = stdscr.getch()
+        if ch == -1: continue
+        if ch in (ord('q'), ord('Q'), 27): break
+        elif ch in (curses.KEY_UP, ord('k')): selected_idx = max(0, selected_idx - 1)
+        elif ch in (curses.KEY_DOWN, ord('j')): selected_idx = min(len(entries) - 1, selected_idx + 1)
+        elif ch in (curses.KEY_PPAGE,): selected_idx = max(0, selected_idx - 10)
+        elif ch in (curses.KEY_NPAGE,): selected_idx = min(len(entries) - 1, selected_idx + 10)
+        elif ch in (curses.KEY_BACKSPACE, 127, 8):
+            parent = os.path.dirname(cur_path) or "/"; d, e = list_dir(parent)
+            if d: cur_path = d["path"]; entries = d["entries"]; selected_idx = 0; last_preview_key = None; status = f"Moved to {cur_path}"
+            else: status = f"[x] {e}"
+        elif ch in (10, 13):
+            if not entries: continue
+            entry = entries[selected_idx]; full = os.path.join(cur_path, entry["name"])
+            if entry["is_dir"]:
+                d, e = list_dir(full)
+                if d: cur_path = d["path"]; entries = d["entries"]; selected_idx = 0; last_preview_key = None; status = f"Opened {cur_path}"
+                else: status = f"[x] {e}"
+        elif ch == ord('d'):
+            if entries:
+                full = os.path.join(cur_path, entries[selected_idx]["name"])
+                show_msg(stdscr, [f"Downloading {os.path.basename(full)}...", "Please wait..."])
+                try:
+                    r = subprocess.run(["scp", "-r", "-o", "ControlPath=/tmp/rfiles-ssh-%r@%h:%p", f"{REMOTE}:{shlex.quote(full)}", "./"], capture_output=True, text=True, timeout=300)
+                    status = f"[+] Downloaded {os.path.basename(full)}" if r.returncode == 0 else f"[x] scp failed"
+                except Exception as e: status = f"[x] {e}"
+        elif ch == ord('u'):
+            local = prompt_curses("Local file path (or 'cancel'): ")
+            if local and local.strip().lower() != "cancel":
+                local = os.path.expanduser(local.strip()); show_msg(stdscr, [f"Uploading {os.path.basename(local)}..."])
+                try:
+                    r = subprocess.run(["scp", "-r", "-o", "ControlPath=/tmp/rfiles-ssh-%r@%h:%p", local, f"{REMOTE}:{shlex.quote(cur_path)}/"], capture_output=True, text=True, timeout=300)
+                    status = f"[+] Uploaded" if r.returncode == 0 else "[x] scp failed"
+                    d, _ = list_dir(cur_path); entries = d["entries"] if d else entries; last_preview_key = None
+                except Exception as e: status = f"[x] {e}"
+        elif ch in (curses.KEY_DC,):
+            if entries:
+                entry = entries[selected_idx]; full = os.path.join(cur_path, entry["name"])
+                ans = prompt_curses(f"Delete '{entry['name']}'? [y/N]: ")
+                if ans and ans.strip().lower() == "y":
+                    rc, _, err = ssh(f"rm -rf -- {shq(full)}")
+                    status = f"Deleted {entry['name']}" if rc == 0 else f"[x] delete failed: {err.strip()}"
+                    d, _ = list_dir(cur_path)
+                    if d: entries = d["entries"]; selected_idx = min(selected_idx, len(entries)-1) if entries else 0; last_preview_key = None
+        elif ch == ord('r'):
+            if entries:
+                entry = entries[selected_idx]; newname = prompt_curses(f"Rename '{entry['name']}' to: ")
+                if newname and newname.strip() and newname.strip() != entry["name"]:
+                    rc, _, err = ssh(f"mv -- {shq(os.path.join(cur_path, entry['name']))} {shq(os.path.join(cur_path, newname.strip()))}")
+                    status = f"Renamed to {newname.strip()}" if rc == 0 else f"[x] rename failed: {err.strip()}"
+                    d, _ = list_dir(cur_path)
+                    if d: entries = d["entries"]; last_preview_key = None
+        elif ch == ord('o'):
+            if entries and not entries[selected_idx]["is_dir"]:
+                full = os.path.join(cur_path, entries[selected_idx]["name"])
+                open_script = "pid=''; for n in sway kwin_wayland plasmashell gnome-shell Hyprland; do pid=$(pgrep -n -x \"$n\" 2>/dev/null || true); [ -n \"$pid\" ] && break; done; if [ -n \"$pid\" ] && [ -r \"/proc/$pid/environ\" ]; then while IFS= read -r -d '' item; do case \"$item\" in WAYLAND_DISPLAY=*|DISPLAY=*|XAUTHORITY=*|DBUS_SESSION_BUS_ADDRESS=*|XDG_RUNTIME_DIR=*) export \"$item\";; esac; done < \"/proc/$pid/environ\"; fi; setsid -f xdg-open -- " + shq(full) + " >/dev/null 2>&1"
+                rc, _, err = ssh(open_script)
+                status = f"Opened {entries[selected_idx]['name']} on remote" if rc == 0 else f"[x] open failed: {err.strip()}"
+        elif ch == ord('g'): selected_idx = 0
+        elif ch == ord('G'): selected_idx = max(0, len(entries) - 1)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Browse and transfer files on a remote host over SSH.")
+    parser.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    parser.add_argument("--start", default=os.environ.get("RFILES_START", "~"), help="remote starting directory (default: remote home)")
+    args = parser.parse_args()
+    REMOTE = args.host
+    os.environ["RFILES_START"] = args.start
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        pass

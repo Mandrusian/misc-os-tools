@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""Stream a remote Wayland screen over SSH using grim and the bundled viewer."""
+import argparse
+import shlex
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REMOTE_SCRIPT = r'''import os, shutil, struct, subprocess, sys, time
+pid = None
+for name in ("sway", "kwin_wayland", "Hyprland", "gnome-shell"):
+    try:
+        p = subprocess.run(["pgrep", "-n", "-x", name], capture_output=True, text=True)
+        if p.returncode == 0 and p.stdout.strip():
+            pid = p.stdout.strip().splitlines()[-1]
+            break
+    except FileNotFoundError:
+        pass
+env = os.environ.copy()
+if pid:
+    try:
+        for item in open(f"/proc/{pid}/environ", "rb").read().split(bytes([0])):
+            if b"=" in item:
+                k, v = item.split(b"=", 1)
+                key = k.decode(errors="ignore")
+                if key in {"WAYLAND_DISPLAY", "DISPLAY", "XAUTHORITY", "DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"}:
+                    env[key] = v.decode(errors="ignore")
+    except OSError:
+        pass
+if not shutil.which("grim"):
+    sys.exit("rscr requires grim on the remote host")
+while True:
+    frame = subprocess.run(["grim", "-"], env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if frame.returncode == 0 and frame.stdout:
+        sys.stdout.buffer.write(struct.pack(">I", len(frame.stdout)))
+        sys.stdout.buffer.write(frame.stdout)
+        sys.stdout.buffer.flush()
+    time.sleep(0.1)
+'''
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    args = ap.parse_args()
+    if shutil.which("ssh") is None:
+        ap.error("ssh is not installed")
+    viewer_path = Path(__file__).with_name("rscr-viewer")
+    if not viewer_path.is_file():
+        ap.error(f"viewer not found beside rscr: {viewer_path}")
+    print(f"Connecting to {args.host}; close the viewer or press Ctrl+C to stop.", file=sys.stderr)
+    ssh = subprocess.Popen(["ssh", "-T", "-o", "BatchMode=yes", args.host,
+                            "python3 -c " + shlex.quote(REMOTE_SCRIPT)], stdout=subprocess.PIPE)
+    viewer = None
+    try:
+        viewer = subprocess.Popen([sys.executable, str(viewer_path)], stdin=ssh.stdout)
+        if ssh.stdout:
+            ssh.stdout.close()
+        return viewer.wait()
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        if viewer and viewer.poll() is None:
+            viewer.terminate()
+        if ssh.poll() is None:
+            ssh.terminate()
+            try:
+                ssh.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                ssh.kill()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

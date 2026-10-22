@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+import sys, struct
+from PyQt6.QtWidgets import QApplication, QLabel, QMainWindow
+from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+class Reader(QThread):
+    frame_ready = pyqtSignal(bytes)
+    disconnected = pyqtSignal()
+
+    def run(self):
+        stream = sys.stdin.buffer
+        while True:
+            try:
+                header = stream.read(4)
+                if len(header) < 4: break
+                size = struct.unpack(">I", header)[0]
+                data = bytearray()
+                while len(data) < size:
+                    chunk = stream.read(size - len(data))
+                    if not chunk: break
+                    data.extend(chunk)
+                if len(data) == size:
+                    self.frame_ready.emit(bytes(data))
+            except (ValueError, OSError):
+                # stdin was closed during shutdown
+                break
+        self.disconnected.emit()
+
+class Viewer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("rscr")
+        self.resize(1280, 800)
+        self.label = QLabel("Waiting for frames...")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setStyleSheet("background-color: black; color: white;")
+        self.setCentralWidget(self.label)
+        self.setStyleSheet("background-color: black;")
+        self.current_pixmap = None
+
+    def update_frame(self, data):
+        if not data: return
+        pix = QPixmap()
+        if pix.loadFromData(data) and not pix.isNull():
+            self.current_pixmap = pix
+            self.apply_pixmap()
+
+    def apply_pixmap(self):
+        if self.current_pixmap and not self.current_pixmap.isNull():
+            sz = self.size()
+            if sz.width() > 10 and sz.height() > 10:
+                self.label.setPixmap(self.current_pixmap.scaled(
+                    sz, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+
+    def resizeEvent(self, event):
+        self.apply_pixmap()
+        super().resizeEvent(event)
+
+    def closeEvent(self, event):
+        # Force the blocking stdin read in Reader to throw an exception and stop
+        try:
+            sys.stdin.close()
+        except Exception:
+            pass
+        super().closeEvent(event)
+
+def main():
+    app = QApplication(sys.argv)
+    window = Viewer()
+    window.show()
+
+    reader = Reader()
+    reader.frame_ready.connect(window.update_frame)
+    reader.disconnected.connect(app.quit)
+    reader.start()
+
+    sys.exit(app.exec())
+
+if __name__ == "__main__":
+    main()

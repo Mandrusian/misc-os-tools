@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Stream a local directory into a directory under a remote SSH user's home."""
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import shlex
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("host", help="SSH host alias from ~/.ssh/config")
+    ap.add_argument("source", nargs="?", default="~/Downloads/isos", help="local directory (default: ~/Downloads/isos)")
+    ap.add_argument("--destination", default="isos", help="directory under remote home (default: isos)")
+    args = ap.parse_args()
+    source = os.path.abspath(os.path.expanduser(args.source))
+    if not os.path.isdir(source):
+        ap.error(f"source directory does not exist: {source}")
+    if shutil.which("ssh") is None or shutil.which("tar") is None:
+        ap.error("both ssh and tar must be installed")
+    destination = args.destination.strip("/")
+    if not destination or any(part in ("", ".", "..") for part in destination.split("/")):
+        ap.error("--destination must be a safe relative path under remote home")
+    remote_path = '"$HOME"/' + shlex.quote(destination)
+    remote_command = f"mkdir -p -- {remote_path} && tar -C {remote_path} -xf -"
+    tar = subprocess.Popen(["tar", "-C", source, "-cf", "-", "."], stdout=subprocess.PIPE)
+    try:
+        remote = subprocess.run(["ssh", "-T", "-o", "BatchMode=yes", args.host, remote_command],
+                                stdin=tar.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if tar.stdout:
+            tar.stdout.close()
+        tar_rc = tar.wait()
+        if tar_rc or remote.returncode:
+            if remote.stderr:
+                sys.stderr.write(remote.stderr.decode("utf-8", "replace"))
+            print(f"Transfer failed (tar={tar_rc}, ssh={remote.returncode})", file=sys.stderr)
+            return 1
+    except KeyboardInterrupt:
+        tar.terminate()
+        return 130
+    print(f"Transferred {source} to {args.host}:~/{args.destination}")
+    return 0
+
+if __name__ == "__main__":
+    raise SystemExit(main())
