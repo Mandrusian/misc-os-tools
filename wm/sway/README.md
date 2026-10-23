@@ -60,3 +60,20 @@ swaym --save-current
 ```
 
 Run `swaym` to reapply the saved positions. Ensure your Sway config includes `~/.config/sway/monitors.conf` so the layout also loads during compositor startup/reload. See [the full swaym guide](swaym.md).
+
+## Runtime dependencies
+
+Beyond SwayFX and Waybar, the config and Waybar click handlers may use these tools:
+
+- Terminal: `foot`, `alacritty`
+- Launcher: `wofi`
+- Session/locking: `swayidle`, `swaylock`
+- Brightness: `brightnessctl`
+- System monitor: `btop`
+- Network editor: `nm-connection-editor`
+- Audio: `pavucontrol`, `pactl`, `wpctl` (WirePlumber CLI)
+- Screenshot: `grimshot`
+- Calendar: `cal`, `bash`
+- Helper scripts: Python 3 and `swaymsg` (normally supplied with Sway/SwayFX)
+
+Install only the tools you use; unused bindings and click actions can be removed from `config` or the Waybar configuration.

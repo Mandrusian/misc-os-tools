@@ -1,0 +1,109 @@
+# ── Sway Floating Monochrome Config ──
+
+set $mod Mod4
+set $term alacritty
+set $menu wofi --show drun
+
+# ── Key Bindings ──
+bindsym $mod+Return exec $term
+bindsym $mod+space exec $menu
+bindsym $mod+q kill
+bindsym $mod+Shift+c reload
+
+# ── Floating Window Settings ──
+# Force ALL windows to float by default
+for_window [app_id=".*"] floating enable
+for_window [class=".*"] floating enable
+
+# Use Alt (Mod1) to drag and resize windows with the mouse
+floating_modifier Mod1
+
+# ── Window Appearance (The Swindle Look) ──
+default_border pixel 1
+default_floating_border pixel 1
+hide_edge_borders smart
+
+# ── Colors (Monochrome) ──
+client.focused          #ffffff #000000 #ffffff #ffffff #ffffff
+client.unfocused        #000000 #000000 #ffffff #000000 #000000
+client.focused_inactive #000000 #000000 #ffffff #000000 #000000
+
+# ── Autostart & Wallpaper ──
+# Solid black background; replace with your own wallpaper if desired.
+output * bg #000000 solid_color
+
+# Disable screen blanking
+exec swayidle -w timeout 600 'swaylock -f -c 000000' timeout 900 'swaymsg "output * dpms off"' resume 'swaymsg "output * dpms on"'
+
+# ── Additional Shortcuts ──
+# Toggle floating
+bindsym $mod+Shift+space floating toggle
+# Exit Sway (Logout)
+bindsym $mod+Shift+e exit
+
+# ── Trackpad Gestures ──
+# Swipe left with three fingers to go to next workspace
+# Swipe right with three fingers to go to previous workspace
+# Swipe up with three fingers to toggle floating (optional, matches default Sway behavior)
+bindgesture swipe:3:up floating toggle
+# Swipe down with three fingers to toggle floating (optional, matches default Sway behavior)
+bindgesture swipe:3:down floating toggle
+
+# ── Dynamic Trackpad Gestures ──
+# Swipe left to create/switch to next workspace
+bindgesture swipe:3:left exec ~/.local/bin/sway-swipe-ws next
+# Swipe right to create/switch to previous workspace
+bindgesture swipe:3:right exec ~/.local/bin/sway-swipe-ws prev
+
+bar {
+    swaybar_command waybar
+}
+
+for_window [app_id="cal-popup"] floating enable, border pixel 1, resize set 260 200, move position center
+
+bindsym $mod+1 workspace number 1
+bindsym $mod+2 workspace number 2
+bindsym $mod+3 workspace number 3
+bindsym $mod+4 workspace number 4
+bindsym $mod+5 workspace number 5
+bindsym $mod+6 workspace number 6
+bindsym $mod+7 workspace number 7
+bindsym $mod+8 workspace number 8
+bindsym $mod+9 workspace number 9
+bindsym $mod+0 workspace number 10
+bindsym $mod+Shift+1 move container to workspace number 1
+bindsym $mod+Shift+2 move container to workspace number 2
+bindsym $mod+Shift+3 move container to workspace number 3
+bindsym $mod+Shift+4 move container to workspace number 4
+bindsym $mod+Shift+5 move container to workspace number 5
+bindsym $mod+Shift+6 move container to workspace number 6
+bindsym $mod+Shift+7 move container to workspace number 7
+bindsym $mod+Shift+8 move container to workspace number 8
+bindsym $mod+Shift+9 move container to workspace number 9
+bindsym $mod+Shift+0 move container to workspace number 10
+animation_duration_ms 250
+
+
+bindsym --locked XF86AudioRaiseVolume exec wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+
+bindsym --locked XF86AudioLowerVolume exec wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-
+bindsym --locked XF86AudioMute exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle
+bindsym --locked XF86AudioMicMute exec wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle
+bindsym --locked XF86MonBrightnessUp exec brightnessctl set 5%+
+bindsym --locked XF86MonBrightnessDown exec brightnessctl set 5%-
+bindsym --locked XF86KbdBrightnessUp exec brightnessctl -d '*kbd_backlight' set 10%+
+bindsym --locked XF86KbdBrightnessDown exec brightnessctl -d '*kbd_backlight' set 10%-
+
+
+exec_always sh -c 'mkdir -p "$HOME/.cache"; if test -f "$HOME/.cache/sway-edge-snap.pid"; then kill "$(cat "$HOME/.cache/sway-edge-snap.pid")" 2>/dev/null || true; fi; python3 "$HOME/.local/bin/sway-edge-snap.py" >> "$HOME/.cache/sway-edge-snap.log" 2>&1 & echo $! > "$HOME/.cache/sway-edge-snap.pid"'
+bindsym $mod+Ctrl+Left exec swaymsg 'floating enable; resize set width 50 ppt height 100 ppt; move position 0 ppt 0 ppt'
+bindsym $mod+Ctrl+Right exec swaymsg 'floating enable; resize set width 50 ppt height 100 ppt; move position 50 ppt 0 ppt'
+bindsym $mod+Ctrl+Home exec swaymsg 'floating enable; resize set width 50 ppt height 50 ppt; move position 0 ppt 0 ppt'
+bindsym $mod+Ctrl+Prior exec swaymsg 'floating enable; resize set width 50 ppt height 50 ppt; move position 50 ppt 0 ppt'
+bindsym $mod+Ctrl+End exec swaymsg 'floating enable; resize set width 50 ppt height 50 ppt; move position 0 ppt 50 ppt'
+bindsym $mod+Ctrl+Next exec swaymsg 'floating enable; resize set width 50 ppt height 50 ppt; move position 50 ppt 50 ppt'
+bindsym $mod+Ctrl+Up exec swaymsg 'floating enable; resize set width 100 ppt height 100 ppt; move position 0 ppt 0 ppt'
+bindsym $mod+Ctrl+Down exec swaymsg 'floating enable; resize set width 70 ppt height 80 ppt; move position center'
+
+
+# Monitor settings managed by sway-monitor-tui
+bindsym Mod4+Shift+p exec grimshot copy area

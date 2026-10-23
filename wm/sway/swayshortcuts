@@ -61,12 +61,12 @@ def main():
         if line == "}":
             mode = "default"
             continue
-        m = re.match(r"^(bindsym|bindcode)\s+(?:--[^\s]+\s+)*([^\s]+)\s+(.+)$", line)
+        m = re.match(r"^(bindsym|bindcode)\s+((?:--[^\s]+\s+)*)([^\s]+)\s+(.+)$", line)
         if not m:
             continue
-        kind, key, command = m.groups()
+        kind, options, key, command = m.groups()
         if args.raw:
-            readable = f"{kind} {key} {command}"
+            readable = f"{kind} {options}{key} {command}"
         else:
             readable = key.replace("+", " + ")
             for old, new in MODS.items():
