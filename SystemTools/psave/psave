@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# Battery helpers for Fedora Asahi. No background daemon or root required.
+set -uo pipefail
+state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/psave"
+screen=apple-panel-bl
+keyboard=kbd_backlight
+profile() {
+    busctl --system get-property net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile | cut -d '"' -f 2
+}
+set_profile() {
+    busctl --system set-property net.hadess.PowerProfiles /net/hadess/PowerProfiles net.hadess.PowerProfiles ActiveProfile s "$1"
+}
+save_settings() {
+    mkdir -p "$state_dir" || return
+    if [[ ! -f "$state_dir/before-school" ]]; then
+        local old_profile old_screen old_keyboard
+        old_profile=$(profile) || return
+        old_screen=$(brightnessctl -d "$screen" get) || return
+        old_keyboard=$(brightnessctl -d "$keyboard" get) || return
+        (umask 077; printf '%s\n%s\n%s\n' "$old_profile" "$old_screen" "$old_keyboard" > "$state_dir/before-school")
+    fi
+}
+status() {
+    printf 'Power profile: '; profile || return
+    brightnessctl -d "$screen" info
+    local battery=/sys/class/power_supply/macsmc-battery
+    if [[ -r "$battery/capacity" ]]; then
+        printf 'Battery: %s%% (%s)\n' "$(cat "$battery/capacity")" "$(cat "$battery/status")"
+        if [[ -r "$battery/power_now" ]]; then
+            awk '{printf "Instantaneous battery power: %.2f W\n", $1/1000000}' "$battery/power_now"
+        fi
+    fi
+}
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+export PSAVE_HELPER_PATH="$script_dir/$(basename -- "${BASH_SOURCE[0]}")"
+tui_file="${PSAVE_TUI_PATH:-${XDG_DATA_HOME:-$HOME/.local/share}/psave/tui.py}"
+[[ ! -f "$script_dir/tui.py" ]] || tui_file="$script_dir/tui.py"
+if [[ $# == 0 && -t 0 && -t 1 ]]; then
+    exec python3 "$tui_file"
+fi
+case "${1:-help}" in
+    tui) exec python3 "$tui_file" ;;
+    help|-h|--help)
+        cat <<'HELP'
+psave — battery-saving commands for your school day
+
+  psave              Open task manager with live Braille graphs
+  psave tui          Open the dashboard explicitly
+  psave school       Power saver, screen capped at 35%, keyboard light off
+  psave on           Select the power-saver profile only
+  psave restore      Restore settings saved by the first school command
+  psave balanced     Select the balanced profile only
+  psave dim 25       Set screen brightness to 25% (1–100)
+  psave status       Show profile, brightness and battery
+  psave top          Show processes using the most CPU
+  psave bluetooth off|on   Disable/enable Bluetooth (affects peripherals)
+  psave suspend      Suspend now; resume normally to continue
+  psave install-tools     Install optional PowerTOP diagnostic (sudo needed)
+  psave clean-system      Trim old system logs and package cache (sudo needed)
+
+Use school before class; use restore afterwards. Wi-Fi stays available.
+Keep brightness comfortable, close unused games/VMs, and suspend between classes.
+The power profile persists until changed; screen brightness may be changed by KDE.
+Dashboard: Tab switches views; / filters; c/m sorts CPU/RAM; ? lists keys.
+HELP
+        ;;
+    on) set_profile power-saver && printf 'Power saver enabled.\n' ;;
+    school)
+        save_settings || exit 1
+        set_profile power-saver || exit 1
+        current=$(brightnessctl -d "$screen" get) || exit 1
+        maximum=$(brightnessctl -d "$screen" max) || exit 1
+        if (( current * 100 > maximum * 35 )); then
+            brightnessctl -d "$screen" set 35% || exit 1
+        fi
+        brightnessctl -d "$keyboard" set 0 || exit 1
+        printf 'School mode enabled. Run psave restore to undo it.\n'
+        ;;
+    restore)
+        [[ -f "$state_dir/before-school" ]] || { printf 'No school settings saved. Use psave balanced to select balanced mode.\n'; exit 1; }
+        mapfile -t saved < "$state_dir/before-school"
+        [[ ${#saved[@]} == 3 && ${saved[0]} =~ ^(balanced|power-saver|performance)$ && ${saved[1]} =~ ^[0-9]+$ && ${saved[2]} =~ ^[0-9]+$ ]] || { printf 'Invalid saved settings.\n' >&2; exit 1; }
+        set_profile "${saved[0]}" && brightnessctl -d "$screen" set "${saved[1]}" && brightnessctl -d "$keyboard" set "${saved[2]}" || exit 1
+        rm -- "$state_dir/before-school"
+        printf 'Previous profile and brightness restored.\n'
+        ;;
+    balanced) set_profile balanced && printf 'Balanced profile enabled.\n' ;;
+    dim)
+        [[ ${2:-} =~ ^[0-9]{1,3}$ ]] && (( 10#$2 >= 1 && 10#$2 <= 100 )) || { printf 'Usage: psave dim 1–100\n' >&2; exit 2; }
+        brightnessctl -d "$screen" set "$((10#$2))%"
+        ;;
+    status) status ;;
+    top) ps -eo pid,comm,%cpu,%mem --sort=-%cpu | head -16 ;;
+    bluetooth)
+        case "${2:-}" in
+            off) rfkill block bluetooth ;;
+            on) rfkill unblock bluetooth ;;
+            *) printf 'Usage: psave bluetooth off|on\n' >&2; exit 2 ;;
+        esac
+        ;;
+    suspend) systemctl suspend ;;
+    install-tools)
+        sudo dnf install powertop
+        ;;
+    clean-system)
+        sudo journalctl --rotate && sudo journalctl --vacuum-size=500M && sudo dnf clean all
+        ;;
+    *) printf 'Unknown command: %s. Run psave help.\n' "$1" >&2; exit 2 ;;
+esac

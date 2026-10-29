@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -u
+
+ADB=/usr/bin/adb
+
+echo "=== PocketLink APK installer ==="
+
+if [[ ! -x "$ADB" ]]; then
+    echo "ERROR: Native ADB not found at $ADB"
+    exit 1
+fi
+
+# Prefer the PocketLink APK; otherwise use the newest APK in Downloads.
+APK="$(find "$HOME/Downloads" -type f -iname '*pocketlink*.apk' -print -quit 2>/dev/null)"
+
+if [[ -z "$APK" ]]; then
+    APK="$(find "$HOME/Downloads" -type f -iname '*.apk' \
+        -printf '%T@ %p\n' 2>/dev/null |
+        sort -rn | head -n 1 | cut -d' ' -f2-)"
+fi
+
+if [[ -z "$APK" || ! -f "$APK" ]]; then
+    echo "ERROR: No APK found in ~/Downloads"
+    exit 1
+fi
+
+echo "APK: $APK"
+echo
+echo "=== ADB version ==="
+"$ADB" version || {
+    echo "Native ADB failed to start."
+    exit 1
+}
+
+echo
+echo "=== Connecting to phone ==="
+"$ADB" start-server || {
+    echo "Could not start ADB server."
+    exit 1
+}
+
+"$ADB" devices -l
+
+if ! "$ADB" devices | awk 'NR > 1 && $2 == "device" { found=1 } END { exit !found }'; then
+    echo
+    echo "Phone not authorized or not detected."
+    echo "Unlock your phone, enable USB debugging, and accept the computer authorization prompt."
+    echo "Then run: install-pocketlink"
+    exit 1
+fi
+
+echo
+echo "=== Installing PocketLink ==="
+if "$ADB" install -r "$APK"; then
+    echo
+    echo "SUCCESS: PocketLink installed!"
+else
+    echo
+    echo "Installation failed. Check the ADB error above."
+    exit 1
+fi

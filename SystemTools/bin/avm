@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export CVD_HOME_DIR="${AVM_HOME:-$HOME/ika}"
+RELEASE=261012
+RPM_DIR="${AVM_RPM_DIR:-$HOME/Downloads/avm-packages}"
+REPO="https://github.com/DesktopECHO/ika/releases/download/$RELEASE"
+
+usage() {
+cat <<'HELP'
+AVM — Android Virtual Machine
+
+  avm                    Start Android
+  avm setup              Install Android VM backend
+  avm start [options]    Boot and open console
+  avm stop               Shut down safely
+  avm restart [options]  Restart Android
+  avm status             Show running status
+  avm install FILE.apk   Install APK
+  avm apps               List Android apps
+  avm launch NAME        Open an Android app
+  avm remove NAME        Uninstall application
+  avm backup [FILE]      Save apps and files
+  avm restore [FILE]     Restore a backup
+  avm data               Show userdata location
+  avm logs               Show startup log
+  avm reset              Factory reset (DELETES DATA)
+  avm help               Show help
+
+Examples:
+  avm start --cpus=6 --memory_mb=8192
+  avm install ~/Downloads/example.apk
+  avm launch com.android.settings
+HELP
+}
+
+need_ika() {
+  if ! command -v ika >/dev/null 2>&1; then
+    echo "Backend missing. Run: avm setup" >&2
+    return 1
+  fi
+  mkdir -p "$CVD_HOME_DIR"
+}
+
+fetch_rpm() {
+  local file="$1"
+  local target="$RPM_DIR/$file"
+  if [[ -f "$target" ]]; then
+    echo "Cached: $file"
+    return
+  fi
+  echo "Downloading: $file"
+  curl -fL --retry 4 --retry-delay 2 -C - \
+    -o "$target.part" "$REPO/$file"
+  mv -f -- "$target.part" "$target"
+}
+
+setup() {
+  if [[ "$(uname -m)" != aarch64 ]]; then
+    echo "Requires ARM64 Fedora Asahi." >&2
+    return 1
+  fi
+
+  source /etc/os-release
+  if [[ "${ID:-}" != fedora && "${ID:-}" != fedora-asahi-remix || "${VERSION_ID:-}" != 44 ]]; then
+    echo "These packages require Fedora 44." >&2
+    return 1
+  fi
+
+  if [[ ! -e /dev/kvm ]]; then
+    echo "Missing /dev/kvm: KVM virtualization unavailable." >&2
+    return 1
+  fi
+
+  if rpm -q ika-base ika-lineageos >/dev/null 2>&1; then
+    echo "Backend already installed."
+    echo "Run: avm start"
+    return
+  fi
+
+  mkdir -p "$RPM_DIR"
+  if ! command -v curl >/dev/null 2>&1; then
+    sudo dnf install -y curl
+  fi
+
+  local base="ika-base-${RELEASE}-1.fc44.aarch64.rpm"
+  local rom="ika-lineageos-${RELEASE}-1.fc44.aarch64.rpm"
+
+  fetch_rpm "$base"
+  fetch_rpm "$rom"
+
+  sudo dnf install -y "$RPM_DIR/$base" "$RPM_DIR/$rom"
+
+  echo
+  echo "AVM installed successfully."
+  echo "Reboot Fedora once, then run: avm start"
+}
+
+cmd="${1:-start}"
+if (($#)); then shift; fi
+
+case "$cmd" in
+  setup)
+    setup "$@"
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  data)
+    echo "$CVD_HOME_DIR"
+    ;;
+  start|stop|restart|status|install|remove|backup|restore|reset)
+    need_ika
+
+    if [[ "$cmd" == install || "$cmd" == remove ]]; then
+      if (($# == 0)); then
+        echo "Missing APK or application name." >&2
+        usage
+        exit 2
+      fi
+    fi
+
+    if [[ "$cmd" == install ]]; then
+      for apk in "$@"; do
+        if [[ ! -f "$apk" ]]; then
+          echo "APK not found: $apk" >&2
+          exit 2
+        fi
+      done
+    fi
+
+    ika "$cmd" "$@"
+    ;;
+  apps)
+    need_ika
+    ika app
+    ;;
+  launch|app)
+    need_ika
+    if (($# == 0)); then
+      usage
+      exit 2
+    fi
+    ika app "$@"
+    ;;
+  logs)
+    if [[ -f "$CVD_HOME_DIR/ikastart.log" ]]; then
+      tail -n 120 "$CVD_HOME_DIR/ikastart.log"
+    else
+      echo "No startup log yet."
+    fi
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage
+    exit 2
+    ;;
+esac

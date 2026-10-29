@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+import argparse, curses, fcntl, json, os, socket, subprocess, sys, time
+
+CONFIG = os.path.expanduser("~/.config/rchat/config.json")
+LOG = os.path.expanduser("~/.rchat/messages.jsonl")
+
+SSH_OPTS = [
+    "ssh", "-T", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+    "-o", "ControlMaster=auto",
+    "-o", f"ControlPath={os.path.expanduser('~/.ssh/cm-rchat-%r@%h:%p')}",
+    "-o", "ControlPersist=60",
+]
+
+def load_config():
+    if not os.path.exists(CONFIG):
+        os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+        with open(CONFIG, "w") as f:
+            json.dump({"me": socket.gethostname(), "peers": {}}, f, indent=2)
+        print(f"Created {CONFIG}")
+    with open(CONFIG, "r") as f:
+        return json.load(f)
+
+def append_log(entry):
+    os.makedirs(os.path.dirname(LOG), exist_ok=True)
+    with open(LOG, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
+
+def notify(title, message):
+    ttl_ms = 20000
+    try:
+        cfg = load_config()
+        ttl_ms = int(cfg.get("notify_ttl_ms", ttl_ms))
+    except Exception: pass
+    # Fedora niri: libnotify (notify-send) handles this
+    subprocess.run(["notify-send", "-a", "rchat", "-u", "normal", "-t", str(ttl_ms), title, message],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+
+def receive_mode():
+    raw = sys.stdin.read()
+    if not raw.strip(): return 1
+    try: payload = json.loads(raw)
+    except Exception: return 1
+    cfg = load_config()
+    entry = {"ts": payload.get("ts", time.time()), "from": payload.get("from", "?"),
+             "to": cfg.get("me", socket.gethostname()), "dir": "in", "msg": payload.get("msg", "")}
+    append_log(entry)
+    notify(f"rchat: {entry['from']}", entry["msg"])
+    return 0
+
+def peer_ssh_cmd(peer, remote_cmd):
+    port = peer.get("port")
+    port_opt = ["-p", str(port)] if port else []
+    return SSH_OPTS + port_opt + [peer["host"], remote_cmd]
+
+def send_message(cfg, peer_name, msg):
+    peer = cfg["peers"].get(peer_name)
+    if not peer: return False, f"unknown peer: {peer_name}"
+    payload = {"from": cfg.get("me", socket.gethostname()), "to": peer_name, "msg": msg, "ts": time.time()}
+    append_log({**payload, "dir": "out"})
+    cmd = peer_ssh_cmd(peer, peer.get("remote_cmd", "rchat --receive"))
+    try:
+        p = subprocess.run(cmd, input=json.dumps(payload), text=True, capture_output=True, timeout=10)
+    except Exception as e: return False, str(e)
+    if p.returncode != 0: return False, (p.stderr.strip() or f"ssh exit {p.returncode}")
+    return True, ""
+
+def read_new_messages(pos):
+    if not os.path.exists(LOG): return [], 0
+    size = os.path.getsize(LOG)
+    if pos > size: pos = 0
+    msgs = []
+    with open(LOG, "rb") as f:
+        f.seek(pos)
+        data = f.read()
+        new_pos = f.tell()
+    for line in data.splitlines():
+        line = line.strip()
+        if not line: continue
+        try: msgs.append(json.loads(line.decode("utf-8")))
+        except Exception: pass
+    return msgs, new_pos
+
+def load_all_messages():
+    msgs = []
+    if os.path.exists(LOG):
+        with open(LOG, "r") as f:
+            for line in f:
+                try: msgs.append(json.loads(line))
+                except Exception: pass
+    return msgs
+
+def draw_chat(win, messages):
+    win.erase()
+    h, w = win.getmaxyx()
+    if h <= 0 or w <= 0: return
+    visible = messages[-h:]
+    for i, m in enumerate(visible):
+        ts = time.strftime("%H:%M", time.localtime(m.get("ts", 0)))
+        direction = m.get("dir", "in")
+        msg = str(m.get("msg", "")).replace("\n", " ")
+        line = f"[{ts}] {m.get('from', '?')} -> {m.get('to', '?')}: {msg}"
+        attr = curses.color_pair(2) if direction == "out" else curses.color_pair(1)
+        try: win.addnstr(i, 0, line, max(0, w - 1), attr)
+        except curses.error: pass
+    win.refresh()
+
+def draw_input(win, status, buf):
+    win.erase()
+    h, w = win.getmaxyx()
+    if h <= 0 or w <= 0: return
+    prompt = f"[{status}] > {buf}"
+    try: win.addnstr(0, 0, prompt, max(0, w - 1), curses.color_pair(3))
+    except curses.error: pass
+    win.refresh()
+
+def tui():
+    cfg = load_config()
+    peers = list(cfg.get("peers", {}).keys())
+    if not peers:
+        print("No peers configured in ~/.config/rchat/config.json")
+        return 1
+    state = {"peer": peers[0], "status": f"to {peers[0]}"}
+    messages = load_all_messages()
+    pos = os.path.getsize(LOG) if os.path.exists(LOG) else 0
+
+    def loop(stdscr):
+        nonlocal pos
+        curses.curs_set(1)
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)
+        curses.init_pair(2, curses.COLOR_CYAN, -1)
+        curses.init_pair(3, curses.COLOR_YELLOW, -1)
+        stdscr.nodelay(True)
+        stdscr.timeout(100)
+        h, w = stdscr.getmaxyx()
+        chat_win = curses.newwin(max(1, h - 2), w, 0, 0)
+        input_win = curses.newwin(2, w, max(0, h - 2), 0)
+        input_buf = ""
+        while True:
+            h, w = stdscr.getmaxyx()
+            if chat_win.getmaxyx() != (max(1, h - 2), w):
+                chat_win.resize(max(1, h - 2), w)
+                input_win.resize(2, w)
+                input_win.mvwin(max(0, h - 2), 0)
+            new, pos = read_new_messages(pos)
+            messages.extend(new)
+            draw_chat(chat_win, messages)
+            draw_input(input_win, state["status"], input_buf)
+            ch = stdscr.getch()
+            if ch == -1 or ch == curses.KEY_RESIZE: continue
+            if ch in (curses.KEY_ENTER, 10, 13):
+                msg = input_buf.strip()
+                input_buf = ""
+                if not msg: continue
+                if msg.startswith("/"):
+                    if msg == "/quit": break
+                    elif msg.startswith("/to "):
+                        name = msg[4:].strip()
+                        if name in cfg["peers"]:
+                            state["peer"], state["status"] = name, f"to {name}"
+                        else: state["status"] = f"unknown: {name}"
+                    elif msg == "/peers": state["status"] = ", ".join(cfg["peers"].keys())
+                    elif msg == "/help": state["status"] = "/to NAME /peers /quit"
+                else:
+                    ok, err = send_message(cfg, state["peer"], msg)
+                    state["status"] = "sent" if ok else f"err: {err}"
+            elif ch in (curses.KEY_BACKSPACE, 127, 8): input_buf = input_buf[:-1]
+            elif ch == 3: break
+            elif 32 <= ch < 127: input_buf += chr(ch)
+    curses.wrapper(loop)
+    return 0
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--receive", action="store_true")
+    parser.add_argument("--send", nargs=2, metavar=("PEER", "MSG"))
+    parser.add_argument("--clear", action="store_true")
+    args = parser.parse_args()
+
+    if args.clear:
+        append_log({"type": "clear", "ts": time.time()})
+        print("clear signal sent")
+        return 0
+
+    if args.receive: return receive_mode()
+
+    if args.send:
+        cfg = load_config()
+        ok, err = send_message(cfg, args.send[0], args.send[1])
+        if not ok: print(err, file=sys.stderr); return 1
+        peer = cfg["peers"].get(args.send[0], {})
+        if peer.get("overlay", True):
+            time.sleep(1.0)
+            try: subprocess.run(["notifs", args.send[0], "--past"], check=False)
+            except Exception: pass
+        else: print(f"sent to {args.send[0]}")
+        return 0
+
+    return tui()
+
+if __name__ == "__main__": sys.exit(main())

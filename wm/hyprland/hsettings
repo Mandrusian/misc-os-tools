@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# ═════════════════════════════════════════════════════════════════
+#  hsettings — Hyprland settings (TUI + rofi + CLI)
+# ═════════════════════════════════════════════════════════════════
+#  Usage:
+#    hsettings                     Interactive TUI
+#    hsettings rofi                Rofi menu (for keybind)
+#    hsettings status              Print current values
+#    hsettings scale 1.5           Set monitor scale
+#    hsettings resolution 1920x1200@60
+#    hsettings gaps 8              Set gaps
+#    hsettings blur 8              Set blur size
+#    hsettings rounding 12         Set corner rounding
+#    hsettings border 2            Set border size
+#    hsettings animations on|off   Toggle animations
+#    hsettings reload              Reload Hyprland
+#    hsettings reset               Clear all overrides
+# ═════════════════════════════════════════════════════════════════
+
+set -uo pipefail
+
+HYPR_DIR="$HOME/.config/hypr"
+SETTINGS_DIR="$HYPR_DIR/settings.d"
+HYPR_CONF="$HYPR_DIR/hyprland.conf"
+ROFI_THEME="${HSETTINGS_ROFI_THEME:-$HOME/.config/rofi/style.rasi}"
+
+# ── Colors ────────────────────────────────────────────────────────
+c_reset=$'\e[0m'; c_bold=$'\e[1m'; c_dim=$'\e[2m'
+c_red=$'\e[31m'; c_green=$'\e[32m'; c_yellow=$'\e[33m'
+c_blue=$'\e[34m'; c_magenta=$'\e[35m'; c_cyan=$'\e[36m'
+
+die() { echo "${c_red}✘ $*${c_reset}" >&2; exit 1; }
+notify() { command -v notify-send >/dev/null && notify-send "Hyprland" "$1" 2>/dev/null || true; }
+
+command -v jq >/dev/null || die "jq is required. Install: sudo dnf install -y jq"
+
+# ── Queries ───────────────────────────────────────────────────────
+current_monitor() {
+    hyprctl monitors -j 2>/dev/null | jq -r '.[] | select(.focused == true) | .name' 2>/dev/null \
+        || hyprctl monitors -j 2>/dev/null | jq -r '.[0].name' 2>/dev/null \
+        || echo "eDP-1"
+}
+monitor_scale() {
+    hyprctl monitors -j 2>/dev/null | jq -r --arg m "$1" '.[] | select(.name == $m) | .scale' 2>/dev/null
+}
+monitor_res() {
+    hyprctl monitors -j 2>/dev/null | jq -r --arg m "$1" '.[] | select(.name == $m) | "\(.width)x\(.height)@\(.refreshRate)"' 2>/dev/null
+}
+
+# ── Persistence ───────────────────────────────────────────────────
+# Each setting lives in its own file under settings.d/, sourced LAST
+# from hyprland.conf so it overrides the module defaults.
+
+ensure_setup() {
+    mkdir -p "$SETTINGS_DIR"
+    for f in 01-monitor 02-gaps 03-blur 04-rounding 05-border 06-animations; do
+        [[ -f "$SETTINGS_DIR/$f.conf" ]] || : > "$SETTINGS_DIR/$f.conf"
+    done
+    if ! grep -q 'settings.d/01-monitor.conf' "$HYPR_CONF" 2>/dev/null; then
+        cat >> "$HYPR_CONF" <<'EOF'
+
+# ── User settings (managed by hsettings) ─────────────────────────
+# Sourced LAST so they override the modules above.
+source = ~/.config/hypr/settings.d/01-monitor.conf
+source = ~/.config/hypr/settings.d/02-gaps.conf
+source = ~/.config/hypr/settings.d/03-blur.conf
+source = ~/.config/hypr/settings.d/04-rounding.conf
+source = ~/.config/hypr/settings.d/05-border.conf
+source = ~/.config/hypr/settings.d/06-animations.conf
+EOF
+    fi
+}
+
+write_setting() {
+    printf '%s\n' "$2" > "$SETTINGS_DIR/$1"
+    hyprctl reload 2>/dev/null || true
+}
+
+# ── Setters ───────────────────────────────────────────────────────
+set_scale() {
+    local scale="${1:-}" mon="${2:-$(current_monitor)}"
+    [[ "$scale" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "Invalid scale: '$scale' (use 1, 1.25, 1.5, 2, etc.)"
+    hyprctl keyword monitor "$mon,preferred,auto,$scale" >/dev/null
+    write_setting "01-monitor.conf" "monitor = $mon, preferred, auto, $scale"
+    notify "Scale → $scale"
+    echo "${c_green}✓${c_reset} $mon scale = $scale"
+}
+
+set_resolution() {
+    local res="${1:-}" mon="${2:-$(current_monitor)}"
+    [[ -n "$res" ]] || die "Usage: hsettings resolution WxH@Hz"
+    local scale; scale="$(monitor_scale "$mon")"
+    [[ -z "$scale" || "$scale" == "null" ]] && scale=1
+    hyprctl keyword monitor "$mon,$res,auto,$scale" >/dev/null
+    write_setting "01-monitor.conf" "monitor = $mon, $res, auto, $scale"
+    notify "Resolution → $res"
+    echo "${c_green}✓${c_reset} $mon resolution = $res (scale $scale)"
+}
+
+set_gaps() {
+    local v="${1:-}"; [[ "$v" =~ ^[0-9]+$ ]] || die "Invalid gaps: '$v'"
+    local out=$(( v * 2 ))
+    hyprctl keyword general:gaps_in "$v" >/dev/null
+    hyprctl keyword general:gaps_out "$out" >/dev/null
+    write_setting "02-gaps.conf" "general { gaps_in = $v; gaps_out = $out }"
+    notify "Gaps → $v"
+    echo "${c_green}✓${c_reset} gaps = $v (out $out)"
+}
+
+set_blur() {
+    local v="${1:-}"; [[ "$v" =~ ^[0-9]+$ ]] || die "Invalid blur: '$v'"
+    local passes=1; (( v > 4 )) && passes=2
+    hyprctl keyword decoration:blur:enabled true >/dev/null
+    hyprctl keyword decoration:blur:size "$v" >/dev/null
+    hyprctl keyword decoration:blur:passes "$passes" >/dev/null
+    write_setting "03-blur.conf" "decoration { blur { enabled = true; size = $v; passes = $passes } }"
+    notify "Blur → $v"
+    echo "${c_green}✓${c_reset} blur = $v (passes $passes)"
+}
+
+set_rounding() {
+    local v="${1:-}"; [[ "$v" =~ ^[0-9]+$ ]] || die "Invalid rounding: '$v'"
+    hyprctl keyword decoration:rounding "$v" >/dev/null
+    write_setting "04-rounding.conf" "decoration { rounding = $v }"
+    notify "Rounding → $v"
+    echo "${c_green}✓${c_reset} rounding = $v"
+}
+
+set_border() {
+    local v="${1:-}"; [[ "$v" =~ ^[0-9]+$ ]] || die "Invalid border: '$v'"
+    hyprctl keyword general:border_size "$v" >/dev/null
+    write_setting "05-border.conf" "general { border_size = $v }"
+    notify "Border → $v"
+    echo "${c_green}✓${c_reset} border = $v"
+}
+
+set_animations() {
+    local state="${1:-}"
+    case "$state" in
+        on|true|1|yes)  state="true" ;;
+        off|false|0|no) state="false" ;;
+        *) die "animations expects: on | off" ;;
+    esac
+    hyprctl keyword animations:enabled "$state" >/dev/null
+    write_setting "06-animations.conf" "animations { enabled = $state }"
+    notify "Animations $state"
+    echo "${c_green}✓${c_reset} animations = $state"
+}
+
+reset_settings() {
+    for f in 01-monitor 02-gaps 03-blur 04-rounding 05-border 06-animations; do
+        : > "$SETTINGS_DIR/$f.conf"
+    done
+    hyprctl reload
+    echo "${c_green}✓${c_reset} overrides cleared"
+    notify "Settings reset"
+}
+
+# ── Status ────────────────────────────────────────────────────────
+show_status() {
+    local mon; mon="$(current_monitor)"
+    local scale; scale="$(monitor_scale "$mon")"
+    local res; res="$(monitor_res "$mon")"
+    local gi go bl be ro bo an
+    gi=$(hyprctl getoption general:gaps_in -j 2>/dev/null | jq -r '.int')
+    go=$(hyprctl getoption general:gaps_out -j 2>/dev/null | jq -r '.int')
+    bl=$(hyprctl getoption decoration:blur:size -j 2>/dev/null | jq -r '.int')
+    be=$(hyprctl getoption decoration:blur:enabled -j 2>/dev/null | jq -r '.int')
+    ro=$(hyprctl getoption decoration:rounding -j 2>/dev/null | jq -r '.int')
+    bo=$(hyprctl getoption general:border_size -j 2>/dev/null | jq -r '.int')
+    an=$(hyprctl getoption animations:enabled -j 2>/dev/null | jq -r '.int')
+
+    printf "${c_bold}${c_cyan}Hyprland Settings${c_reset}\n"
+    printf "${c_dim}─────────────────────────────────────${c_reset}\n"
+    printf "  %-12s %s\n" "Monitor"    "$mon"
+    printf "  %-12s %s\n" "Resolution" "${res:-?}"
+    printf "  %-12s %s\n" "Scale"      "${scale:-1}"
+    printf "  %-12s %s in / %s out\n" "Gaps" "$gi" "$go"
+    printf "  %-12s %s px (enabled: %s)\n" "Blur" "$bl" "$be"
+    printf "  %-12s %s px\n" "Rounding" "$ro"
+    printf "  %-12s %s px\n" "Border"   "$bo"
+    printf "  %-12s %s\n" "Animations" "$an"
+    printf "${c_dim}─────────────────────────────────────${c_reset}\n"
+}
+
+# ── Rofi frontend ─────────────────────────────────────────────────
+_rofi() { rofi -dmenu -i -theme "$ROFI_THEME" "$@"; }
+
+rofi_menu() {
+    ensure_setup
+    local mon scale res choice
+    mon="$(current_monitor)"
+    scale="$(monitor_scale "$mon")"
+    res="$(monitor_res "$mon")"
+
+    choice=$(cat <<EOF | _rofi -p "⚙ Hypr Settings"
+Monitor Scale      [$scale]
+Resolution         [$res]
+Gaps
+Blur
+Corner Rounding
+Border Size
+──────────────
+Toggle Animations
+Reload Hyprland
+Reset All Overrides
+EOF
+)
+    [[ -z "$choice" ]] && return
+    case "$choice" in
+        "Monitor Scale"*)
+            local v; v=$(printf "1.0\n1.25\n1.5\n1.75\n2.0" | _rofi -p "Scale ($mon)")
+            [[ -n "$v" ]] && set_scale "$v"
+            ;;
+        "Resolution"*)
+            local v; v=$(printf "preferred\n1920x1200@60\n2560x1440@60\n2560x1600@60\n3024x1964@60\n3456x2234@60" | _rofi -p "Resolution ($mon)")
+            [[ -n "$v" ]] && set_resolution "$v"
+            ;;
+        "Gaps")
+            local v; v=$(printf "0\n4\n8\n12\n16\n24" | _rofi -p "Gaps")
+            [[ -n "$v" ]] && set_gaps "$v"
+            ;;
+        "Blur")
+            local v; v=$(printf "0\n2\n4\n6\n8\n12\n16" | _rofi -p "Blur size")
+            [[ -n "$v" ]] && set_blur "$v"
+            ;;
+        "Corner Rounding")
+            local v; v=$(printf "0\n4\n8\n12\n16\n20" | _rofi -p "Rounding")
+            [[ -n "$v" ]] && set_rounding "$v"
+            ;;
+        "Border Size")
+            local v; v=$(printf "0\n1\n2\n3\n4" | _rofi -p "Border size")
+            [[ -n "$v" ]] && set_border "$v"
+            ;;
+        "Toggle Animations")
+            local v; v=$(printf "on\noff" | _rofi -p "Animations")
+            [[ -n "$v" ]] && set_animations "$v"
+            ;;
+        "Reload Hyprland")    hyprctl reload && notify "Reloaded" ;;
+        "Reset All Overrides") reset_settings ;;
+    esac
+}
+
+# ── TUI frontend ──────────────────────────────────────────────────
+_tui_pick() {
+    # Prints a numbered list to stderr, reads a choice, echoes the value to stdout
+    local prompt="$1"; shift
+    local opts=("$@") i=1
+    for o in "${opts[@]}"; do printf "  %2d) %s\n" "$i" "$o" >&2; i=$((i+1)); done
+    local idx
+    read -rp "  Choose [1-${#opts[@]}]: " idx >&2
+    if [[ "$idx" =~ ^[0-9]+$ ]] && (( idx >= 1 && idx <= ${#opts[@]} )); then
+        echo "${opts[$((idx-1))]}"
+        return 0
+    fi
+    return 1
+}
+
+_tui_pick_free() {
+    local prompt="$1" def="$2"
+    local val
+    read -rp "  $prompt [$def]: " val >&2
+    echo "${val:-$def}"
+}
+
+tui_menu() {
+    ensure_setup
+    while true; do
+        clear
+        show_status
+        echo ""
+        printf "${c_bold}Actions${c_reset}\n"
+        echo "  [1]  Change monitor scale"
+        echo "  [2]  Change resolution"
+        echo "  [3]  Change gaps"
+        echo "  [4]  Change blur"
+        echo "  [5]  Change corner rounding"
+        echo "  [6]  Change border size"
+        echo "  [7]  Toggle animations"
+        echo "  [8]  Reload Hyprland"
+        echo "  [9]  Reset all overrides"
+        echo "  [q]  Quit"
+        echo ""
+        read -rp "Choice: " choice
+        case "$choice" in
+            1) local v; v=$(_tui_pick "Scale" 1.0 1.25 1.5 1.75 2.0) && set_scale "$v"; sleep 1 ;;
+            2) local v; v=$(_tui_pick_free "Resolution (WxH@Hz or preferred)" "$(monitor_res "$(current_monitor)")") && set_resolution "$v"; sleep 1 ;;
+            3) local v; v=$(_tui_pick "Gaps" 0 4 8 12 16 24) && set_gaps "$v"; sleep 1 ;;
+            4) local v; v=$(_tui_pick "Blur size" 0 2 4 6 8 12 16) && set_blur "$v"; sleep 1 ;;
+            5) local v; v=$(_tui_pick "Rounding" 0 4 8 12 16 20) && set_rounding "$v"; sleep 1 ;;
+            6) local v; v=$(_tui_pick "Border" 0 1 2 3 4) && set_border "$v"; sleep 1 ;;
+            7) local v; v=$(_tui_pick "Animations" on off) && set_animations "$v"; sleep 1 ;;
+            8) hyprctl reload && echo "${c_green}✓${c_reset} reloaded"; sleep 1 ;;
+            9) read -rp "Reset all overrides? [y/N] " ans; [[ "$ans" =~ ^[Yy]$ ]] && reset_settings && sleep 1 ;;
+            q|Q) exit 0 ;;
+            *) echo "Invalid choice"; sleep 1 ;;
+        esac
+    done
+}
+
+usage() {
+    cat <<EOF
+${c_bold}hsettings${c_reset} — Hyprland settings manager
+
+${c_bold}Interactive:${c_reset}
+  hsettings              TUI (arrow/menu-driven)
+  hsettings rofi         Rofi dropdown (for keybind)
+
+${c_bold}Direct commands:${c_reset}
+  hsettings status
+  hsettings scale <N>              e.g. 1.5
+  hsettings resolution <WxH@Hz>    e.g. 1920x1200@60 or 'preferred'
+  hsettings gaps <N>
+  hsettings blur <N>
+  hsettings rounding <N>
+  hsettings border <N>
+  hsettings animations <on|off>
+  hsettings reload
+  hsettings reset
+EOF
+}
+
+# ── Dispatch ──────────────────────────────────────────────────────
+case "${1:-}" in
+    ""|tui)          ensure_setup; tui_menu ;;
+    rofi)            rofi_menu ;;
+    status)          show_status ;;
+    scale)           shift; ensure_setup; set_scale "$@" ;;
+    resolution|res)  shift; ensure_setup; set_resolution "$@" ;;
+    gaps)            shift; ensure_setup; set_gaps "$@" ;;
+    blur)            shift; ensure_setup; set_blur "$@" ;;
+    rounding)        shift; ensure_setup; set_rounding "$@" ;;
+    border)          shift; ensure_setup; set_border "$@" ;;
+    animations|anim) shift; ensure_setup; set_animations "$@" ;;
+    reload)          hyprctl reload && echo "${c_green}✓${c_reset} reloaded" ;;
+    reset)           ensure_setup; reset_settings ;;
+    -h|--help|help)  usage ;;
+    *)               die "Unknown command: $1 (try: hsettings --help)" ;;
+esac

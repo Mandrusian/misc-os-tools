@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# ═════════════════════════════════════════════════════════════════
+#  larplist — every terminal beauty tool installed on this system
+# ═════════════════════════════════════════════════════════════════
+
+# ── Colors ────────────────────────────────────────────────────────
+R=$'\e[0m'; B=$'\e[1m'; D=$'\e[2m'
+OR=$'\e[38;5;208m'   # orange (matches your theme)
+CY=$'\e[38;5;51m'    # cyan  (matches your borders)
+GN=$'\e[38;5;114m'   # green check
+RD=$'\e[38;5;203m'   # red cross
+YL=$'\e[38;5;221m'   # yellow name
+GR=$'\e[38;5;245m'   # gray desc
+
+# ── Check if a command exists ─────────────────────────────────────
+check() {
+    if command -v "$1" >/dev/null 2>&1; then
+        printf "${GN}✔${R}"
+    else
+        printf "${RD}✘${R}"
+    fi
+}
+
+# ── Print one row ─────────────────────────────────────────────────
+row() {
+    local cmd="$1" desc="$2" usage="$3"
+    local mark; mark=$(check "$cmd")
+    printf "  %s ${B}${YL}%-14s${R} ${GR}%s${R}\n" "$mark" "$cmd" "$desc"
+    [[ -n "$usage" ]] && printf "     ${D}${CY}▸${R} ${D}%s${R}\n" "$usage"
+}
+
+# ── Header ────────────────────────────────────────────────────────
+clear
+cat <<'BANNER'
+╭──────────────────────────────────────────────────────────╮
+│  ██╗      █████╗ ██████╗ ██████╗ ██╗     ██╗███████╗████████╗
+│  ██║     ██╔══██╗██╔══██╗██╔══██╗██║     ██║██╔════╝╚══██╔══╝
+│  ██║     ███████║██████╔╝██████╔╝██║     ██║███████╗   ██║
+│  ██║     ██╔══██║██╔══██╗██╔═══╝ ██║     ██║╚════██║   ██║
+│  ███████╗██║  ██║██║  ██║██║     ███████╗██║███████║   ██║
+│  ╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝╚══════╝   ╚═╝
+╰──────────────────────────────────────────────────────────╯
+BANNER
+printf "  ${D}terminal beauty & ambient toolkit${R}\n"
+printf "  ${D}checked at $(date '+%Y-%m-%d %H:%M')${R}\n"
+echo ""
+
+# ── Categories ────────────────────────────────────────────────────
+
+printf "${B}${OR}▓▓▓ AUDIO VISUALIZERS ▓▓▓${R}\n"
+row "cava"         "Console audio visualizer (PipeWire ready)"      "cava"
+echo ""
+
+printf "${B}${OR}▓▓▓ SYSTEM MONITORS ▓▓▓${R}\n"
+row "btop"         "Beautiful interactive resource monitor"          "btop"
+row "fastfetch"    "Fast system info fetcher (neofetch successor)"   "fastfetch"
+echo ""
+
+printf "${B}${OR}▓▓▓ AMBIENT ANIMATIONS ▓▓▓${R}\n"
+row "cmatrix"      "Matrix digital rain"                             "cmatrix"
+row "cbonsai"      "Animated growing bonsai tree"                    "cbonsai -li"
+row "lavat"        "Lava lamp with metaball rendering"               "lavat"
+row "asciiquarium" "ASCII aquarium with swimming fish"               "asciiquarium"
+row "pipes-sh"     "Classic terminal pipes screensaver"              "pipes.sh"
+echo ""
+
+printf "${B}${OR}▓▓▓ TEXT DECORATION ▓▓▓${R}\n"
+row "figlet"       "Turn text into large ASCII art"                  "figlet 'hello'"
+row "toilet"       "Colored & styled ASCII text (figlet upgrade)"    "toilet -f bigmono9 'hi'"
+row "lolcat"       "Rainbow gradient for any piped text"             "echo hi | lolcat"
+echo ""
+
+printf "${B}${OR}▓▓▓ BROWSERS & TERMINALS ▓▓▓${R}\n"
+row "w3m"          "Classic text-only web browser"                   "w3m duckduckgo.com"
+row "browsh"       "Modern text browser (headless Firefox backend)"  "browsh https://example.com"
+row "cool-retro-term" "CRT-styled terminal emulator"                 "cool-retro-term"
+echo ""
+
+printf "${B}${OR}▓▓▓ QUICK COMBOS ▓▓▓${R}\n"
+printf "  ${CY}▸${R} ${B}${YL}Ambient corner${R}     ${GR}cava in floating kitty (bottom-right)${R}\n"
+printf "  ${CY}▸${R} ${B}${YL}Dashboard${R}          ${GR}btop | lolcat or btop alone${R}\n"
+printf "  ${CY}▸${R} ${B}${YL}Matrix mode${R}        ${GR}cmatrix -ab -C orange${R}\n"
+printf "  ${CY}▸${R} ${B}${YL}Zen garden${R}         ${GR}cbonsai -l -p -t 0.05${R}\n"
+printf "  ${CY}▸${R} ${B}${YL}Lava lamp${R}          ${GR}lavat -c orange${R}\n"
+printf "  ${CY}▸${R} ${B}${YL}Login banner${R}       ${GR}fastfetch | lolcat${R}\n"
+echo ""
+
+printf "${B}${OR}▓▓▓ INSTALL MORE ▓▓▓${R}\n"
+printf "  ${GR}Fedora COPR bundle:${R}   ${CY}sudo dnf copr enable arcticlore/candy${R}\n"
+printf "  ${GR}Re-run installs:${R}      ${CY}use your distribution package manager${R}\n"
+echo ""
+
+printf "${D}──────────────────────────────────────────────────────────${R}\n"
+printf "  ${GN}✔${R}=installed  ${RD}✘${R}=missing   ${D}run${R} ${CY}larplist${R} ${D}anytime${R}\n"
+printf "${D}──────────────────────────────────────────────────────────${R}\n"

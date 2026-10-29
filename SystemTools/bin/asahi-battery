@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+import subprocess
+import gi
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib
+
+class BatteryApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id='org.asahi.battery.fix')
+
+    def do_activate(self):
+        win = Adw.ApplicationWindow(application=self)
+        win.set_title("Battery")
+        win.set_default_size(400, 450)
+
+        # Main layout box
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        box.set_margin_top(24)
+        box.set_margin_bottom(24)
+        box.set_margin_start(24)
+        box.set_margin_end(24)
+
+        # Header status label
+        self.status_label = Gtk.Label(label="Reading Apple Silicon Hardware...")
+        self.status_label.add_css_class("title-1")
+        box.append(self.status_label)
+
+        # Details group container
+        group = Adw.PreferencesGroup(title="Battery Metrics", description="Made for Asahi Linux")
+        box.append(group)
+
+        # Rows for interpretable data
+        self.pct_row = Adw.ActionRow(title="True Percentage")
+        self.pct_val = Gtk.Label(label="--%")
+        self.pct_val.valign = Gtk.Align.CENTER
+        self.pct_row.add_suffix(self.pct_val)
+        group.add(self.pct_row)
+
+        self.state_row = Adw.ActionRow(title="Power State")
+        self.state_val = Gtk.Label(label="--")
+        self.state_val.valign = Gtk.Align.CENTER
+        self.state_row.add_suffix(self.state_val)
+        group.add(self.state_row)
+
+        self.volt_row = Adw.ActionRow(title="Battery Voltage")
+        self.volt_val = Gtk.Label(label="-- V")
+        self.volt_val.valign = Gtk.Align.CENTER
+        self.volt_row.add_suffix(self.volt_val)
+        group.add(self.volt_row)
+
+        # Button Box layout
+        btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        btn_box.set_margin_top(12)
+
+        # Refresh Button
+        refresh_btn = Gtk.Button(label="Refresh Data")
+        refresh_btn.add_css_class("pill")
+        refresh_btn.add_css_class("suggested-action")
+        refresh_btn.set_hexpand(True)
+        refresh_btn.connect("clicked", self.update_battery_stats)
+        btn_box.append(refresh_btn)
+
+        # Quit Button
+        quit_btn = Gtk.Button(label="Quit")
+        quit_btn.add_css_class("pill")
+        quit_btn.add_css_class("destructive-action")
+        quit_btn.set_hexpand(True)
+        quit_btn.connect("clicked", lambda x: self.quit())
+        btn_box.append(quit_btn)
+
+        box.append(btn_box)
+
+        win.set_content(box)
+        win.present()
+
+        # Initial fetch & setup loop (every 5 seconds)
+        self.update_battery_stats(None)
+        GLib.timeout_add_seconds(5, self.auto_refresh)
+
+    def auto_refresh(self):
+        self.update_battery_stats(None)
+        return True
+
+    def update_battery_stats(self, button):
+        try:
+            # Get true percentage directly from kernel capacity file (no root required)
+            with open("/sys/class/power_supply/macsmc-battery/capacity", "r") as f:
+                capacity = f.read().strip()
+                self.pct_val.set_text(f"{capacity}%")
+                self.status_label.set_text(f"{capacity}% Battery")
+
+            # Run upower command for extra interpretable details
+            cmd = "upower -i $(upower -e | grep battery)"
+            output = subprocess.check_output(cmd, shell=True, text=True)
+
+            state = "Unknown"
+            voltage = "Unknown"
+
+            for line in output.splitlines():
+                line = line.strip()
+                if line.startswith("state:"):
+                    state = line.split(":", 1)[1].strip()
+                elif line.startswith("voltage:"):
+                    voltage = line.split(":", 1)[1].strip()
+
+            # Make state language human friendly
+            state_map = {
+                "charging": "Charging",
+                "discharging": "Discharging (on battery)",
+                "fully-charged": "Fully charged",
+                "pending-charge": "Plugged in (Holding charge)"
+            }
+            friendly_state = state_map.get(state, state.capitalize())
+
+            self.state_val.set_text(friendly_state)
+            self.volt_val.set_text(voltage)
+
+        except Exception as e:
+            self.status_label.set_text("Error reading hardware sensors")
+            print(e)
+
+if __name__ == '__main__':
+    app = BatteryApp()
+    app.run(None)

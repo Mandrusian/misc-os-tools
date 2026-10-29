@@ -35,6 +35,10 @@ A collection of SSH-based utilities for working with remote Linux hosts. Remote 
 | `rspy` | KDE Plasma VNC via SSH tunnel | [Guide](docs/rspy.md) |
 | `rtui` | Curses launcher for remote tools | [Guide](docs/rtui.md) |
 | `rwake` | Best-effort remote display wake | [Guide](docs/rwake.md) |
+| `rchat` | SSH chat TUI and send/receive commands | [Guide](docs/rchat.md) |
+| `rchat-notifyd` | Incoming chat overlay | [Guide](docs/rchat.md) |
+| `rchat-sysnotifyd` | Explicit local notification capture | [Guide](docs/rchat.md) |
+| `notifs` | Inspect configured chat/notification history | [Guide](docs/rchat.md) |
 
 Sway/SwayFX-specific utilities live in [`wm/sway/`](../wm/sway/), not in this directory. The Sway Monitor TUI is documented in [`SwayMonitorTUI/`](../SwayMonitorTUI/).
 

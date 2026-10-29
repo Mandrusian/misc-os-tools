@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+import json, os, re, signal, subprocess, sys, time
+from pathlib import Path
+
+LOG = Path.home() / ".rchat" / "system-notifications.jsonl"
+NOTIFY_HEADER = re.compile(r"^method call .*member=Notify\b")
+BOUNDARY = re.compile(r"^(method call|method return|signal|error)\b")
+STRING_LINE = re.compile(r'^\s*string "(.*)"\s*$')
+INT32_LINE = re.compile(r"int32\s+(-?\d+)\s*$")
+MAX_LINES = 5000
+
+def rotate_if_needed():
+    try:
+        if not LOG.exists() or LOG.stat().st_size < 2_000_000: return
+        with open(LOG, "r", encoding="utf-8", errors="replace") as f: lines = f.readlines()
+        if len(lines) <= MAX_LINES: return
+        with open(LOG, "w", encoding="utf-8") as f: f.writelines(lines[-MAX_LINES:])
+    except Exception: pass
+
+def parse_block(lines):
+    text = "\n".join(lines)
+    strings = STRING_LINE.findall(text)
+    app = strings[0] if len(strings) > 0 else ""
+    summary = strings[2] if len(strings) > 2 else ""
+    body = strings[3] if len(strings) > 3 else ""
+    urgency = 0
+    m = re.search(r'string "urgency".*?byte\s+(\d+)', text, re.S)
+    if m: urgency = int(m.group(1))
+    timeout = -1
+    ints = INT32_LINE.findall(text)
+    if ints: timeout = int(ints[-1])
+    return app, summary, body, urgency, timeout
+
+def append(entry):
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    rotate_if_needed()
+    with open(LOG, "a") as f: f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+def stream_once():
+    cmd = ["stdbuf", "-oL", "dbus-monitor", "--session", "interface='org.freedesktop.Notifications'"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+    print(f"[sysnotify] spawned dbus-monitor pid={proc.pid}", flush=True)
+    in_call = False
+    block = []
+    captured = 0
+    def flush():
+        nonlocal block, in_call, captured
+        if not in_call or not block: block = []; in_call = False; return
+        app, summary, body, urgency, timeout = parse_block(block)
+        if app or summary or body:
+            append({"ts": time.time(), "app": app, "summary": summary, "body": body, "urgency": urgency, "timeout": timeout})
+            captured += 1
+            print(f"[sysnotify] {app!r}: {summary!r}", flush=True)
+        block = []; in_call = False
+    try:
+        for raw in proc.stdout:
+            line = raw.rstrip("\n")
+            if NOTIFY_HEADER.match(line):
+                flush(); in_call = True; block = []
+            elif BOUNDARY.match(line): flush()
+            elif in_call: block.append(line)
+    except KeyboardInterrupt: pass
+    finally:
+        try: proc.terminate(); proc.wait(timeout=3)
+        except Exception: proc.kill()
+    flush()
+    return captured
+
+def main():
+    if "DBUS_SESSION_BUS_ADDRESS" not in os.environ:
+        os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path=/run/user/{os.getuid()}/bus"
+    print(f"[sysnotify] bus={os.environ['DBUS_SESSION_BUS_ADDRESS']}", flush=True)
+    print(f"[sysnotify] logging to {LOG}", flush=True)
+    stop = {"flag": False}
+    def on_term(sig, frame): stop["flag"] = True; sys.exit(0)
+    signal.signal(signal.SIGTERM, on_term)
+    signal.signal(signal.SIGINT, on_term)
+    while not stop["flag"]:
+        try:
+            n = stream_once()
+            print(f"[sysnotify] monitor exited after {n} events, restarting in 2s", flush=True)
+        except Exception as e: print(f"[sysnotify] stream error: {e}", file=sys.stderr, flush=True)
+        if stop["flag"]: break
+        time.sleep(2)
+    return 0
+
+if __name__ == "__main__": sys.exit(main())

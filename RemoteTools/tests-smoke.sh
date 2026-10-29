@@ -14,7 +14,7 @@ for path in root.iterdir():
         ast.parse(text, filename=str(path))
 print("Python syntax checks passed")
 PY
-sh -n "$BIN/sway-swipe-ws"
-python3 "$BIN/swayshortcuts" --help >/dev/null
+sh -n "$HERE/../wm/sway/sway-swipe-ws"
+python3 "$HERE/../wm/sway/swayshortcuts" --help >/dev/null
 python3 "$BIN/rsch" --list >/dev/null
 printf '%s\n' 'Smoke checks passed.'

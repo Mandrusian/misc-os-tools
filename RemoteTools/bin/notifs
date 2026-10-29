@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+import argparse, json, os, subprocess, sys, textwrap, time
+from pathlib import Path
+
+CONFIG = Path.home() / ".config" / "rchat" / "config.json"
+LOG = Path.home() / ".rchat" / "messages.jsonl"
+WIDTH = 60
+PAST_DEFAULT = 20
+SYS_DEFAULT = 20
+
+SSH_OPTS = [
+    "ssh", "-T", "-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=5",
+    "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3",
+    "-o", "ControlMaster=auto", "-o", f"ControlPath={os.path.expanduser('~/.ssh/cm-rchat-%r@%h:%p')}",
+    "-o", "ControlPersist=60",
+]
+REMOTE_STATE = "cat ~/.rchat/overlay-state.json 2>/dev/null || echo '{}'"
+REMOTE_SYSLOG = "tail -n 60 ~/.rchat/system-notifications.jsonl 2>/dev/null || true"
+
+def load_config():
+    try: return json.loads(CONFIG.read_text())
+    except Exception as e: print(f"config error: {e}", file=sys.stderr); sys.exit(2)
+
+def peer_ssh(peer, remote_cmd):
+    port = peer.get("port")
+    port_opt = ["-p", str(port)] if port else []
+    return SSH_OPTS + port_opt + [peer["host"], remote_cmd]
+
+def fetch_peer_state(peer):
+    try: r = subprocess.run(peer_ssh(peer, REMOTE_STATE), capture_output=True, text=True, timeout=8)
+    except subprocess.TimeoutExpired: return None, "timeout"
+    except Exception as e: return None, str(e)
+    if r.returncode != 0: return None, (r.stderr.strip() or f"ssh exit {r.returncode}")
+    try: return json.loads(r.stdout or "{}"), None
+    except Exception as e: return None, f"parse: {e}"
+
+def fetch_system_notifications(peer, limit):
+    try: r = subprocess.run(peer_ssh(peer, REMOTE_SYSLOG), capture_output=True, text=True, timeout=8)
+    except subprocess.TimeoutExpired: return None, "timeout"
+    except Exception as e: return None, str(e)
+    if r.returncode != 0: return None, (r.stderr.strip() or f"ssh exit {r.returncode}")
+    entries = []
+    for raw in (r.stdout or "").splitlines():
+        raw = raw.strip()
+        if not raw: continue
+        try: entries.append(json.loads(raw))
+        except Exception: pass
+    entries.sort(key=lambda e: e.get("ts", 0), reverse=True)
+    return entries[:limit], None
+
+def read_local_state():
+    p = Path.home() / ".rchat" / "overlay-state.json"
+    try: return json.loads(p.read_text())
+    except Exception: return {"cards": []}
+
+def read_past(limit):
+    if not LOG.exists() or limit <= 0: return []
+    entries = []
+    with open(LOG, "rb") as f:
+        for raw in f:
+            raw = raw.strip()
+            if not raw: continue
+            try: e = json.loads(raw.decode("utf-8"))
+            except Exception: continue
+            if e.get("type") == "clear" or e.get("dir") != "in": continue
+            entries.append(e)
+    entries.sort(key=lambda e: e.get("ts", 0), reverse=True)
+    return entries[:limit]
+
+def fmt_ts(ts):
+    try: return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(float(ts)))
+    except Exception: return "?"
+
+def _wrap(s, width): return textwrap.wrap(str(s), width) or [""]
+
+def box(title, rows, empty="No Messages"):
+    inner = WIDTH - 2
+    head = f" {title} "
+    fill = max(0, WIDTH - 3 - len(head))
+    out = ["\u256d\u2500" + head + "\u2500" * fill + "\u256e"]
+    if not rows:
+        pad = max(0, (inner - len(empty)) // 2)
+        out.append("\u2502" + " " * pad + empty + " " * (inner - len(empty) - pad) + "\u2502")
+    else:
+        for i, (t, b) in enumerate(rows):
+            for line in _wrap(t, inner - 4): out.append("\u2502 " + line.ljust(inner - 2) + " \u2502")
+            for line in _wrap(b, inner - 4): out.append("\u2502 " + line.ljust(inner - 2) + " \u2502")
+            if i != len(rows) - 1: out.append("\u2502" + " " * inner + "\u2502")
+    out.append("\u2570" + "\u2500" * inner + "\u256f")
+    return "\n".join(out)
+
+def active_rows(state):
+    rows, now = [], time.time()
+    for c in (state or {}).get("cards", []):
+        title = str(c.get("title", "?"))
+        exp = c.get("expires", 0) or 0
+        tag = f"(expires in {int(exp-now)}s)" if exp and exp-now > 0 else "(persistent)"
+        rows.append((f"{title}  {tag}", str(c.get("body", ""))))
+    return rows
+
+def render_all(cfg, peers, past_limit, sys_limit, watch_mode=False):
+    if watch_mode: os.system("clear")
+    local = read_local_state()
+    print(box(f"local active ({len(active_rows(local))})", active_rows(local)))
+
+    for name in peers:
+        peer = cfg["peers"].get(name)
+        if not peer: print(box(f"{name} (unknown)", [])); print(); continue
+        if peer.get("overlay", True) is False: continue
+
+        state, err = fetch_peer_state(peer)
+        if err: print(box(f"{name} (overlay error)", [], empty=f"(error: {err})"))
+        else: print(box(f"{name}'s rchat overlay ({len(active_rows(state))})", active_rows(state)))
+        print()
+
+        if sys_limit > 0:
+            sys_rows, sys_err = fetch_system_notifications(peer, sys_limit)
+            if sys_err: print(box(f"{name} (system error)", [], empty=f"(error: {sys_err})"))
+            else:
+                srows = [(f"[{e.get('app','?')}]  {e.get('summary','')}", e.get("body","")) for e in sys_rows]
+                print(box(f"{name}'s system notifications ({len(srows)})", srows))
+            print()
+
+    if past_limit > 0:
+        past_rows = [(f"{fmt_ts(e.get('ts'))}  from {e.get('from', '?')}", str(e.get("msg", ""))) for e in read_past(past_limit)]
+        print(box(f"past (last {len(past_rows)})", past_rows, empty="No past messages"))
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("peers", nargs="*")
+    ap.add_argument("--past", action="store_true")
+    ap.add_argument("-n", "--limit", type=int, default=PAST_DEFAULT)
+    ap.add_argument("-w", "--watch", action="store_true")
+    ap.add_argument("-i", "--interval", type=float, default=2.0)
+    ap.add_argument("--active-only", action="store_true")
+    ap.add_argument("--sys-limit", type=int, default=SYS_DEFAULT)
+    ap.add_argument("--no-sys", action="store_true")
+    args = ap.parse_args()
+
+    cfg = load_config()
+    peers = args.peers or list(cfg.get("peers", {}).keys())
+
+    past_limit = 0 if args.active_only else (max(1, args.limit) if args.past else 0)
+    sys_limit = 0 if args.no_sys else max(0, args.sys_limit)
+
+    if not args.watch:
+        render_all(cfg, peers, past_limit, sys_limit)
+        return 0
+    try:
+        while True:
+            render_all(cfg, peers, past_limit, sys_limit, watch_mode=True)
+            print(f"\nrefreshing every {args.interval:g}s \u2014 ctrl-c to quit")
+            time.sleep(max(0.25, args.interval))
+    except KeyboardInterrupt: return 0
+
+if __name__ == "__main__": sys.exit(main())

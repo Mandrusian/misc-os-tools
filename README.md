@@ -16,6 +16,12 @@ A collection of scripts and utilities I use for setting up and managing my syste
 - [Sway tools](wm/sway/README.md) — utilities specific to Sway/SwayFX.
 - [Sway Monitor TUI](SwayMonitorTUI/README.md) — terminal interface for managing Sway monitors.
 - [gh-push](gh-push/README.md) — keyboard-driven Git staging, commit, and push TUI.
+- [System tools](SystemTools/README.md) — psave task manager, battery controls, Android helpers, and downloads.
+- [Bash helpers](ShellTools/README.md) — optional aliases and a system-status prompt.
+- [Hyprland settings](wm/hyprland/README.md) — terminal and Rofi controls for persistent desktop settings.
+
+The [script import audit](SCRIPT-AUDIT.md) records duplicate checks, privacy edits,
+and excluded local tools.
 
 ## Notes
 

@@ -1,0 +1,31 @@
+name: Utility imports
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "SystemTools/**"
+      - "ShellTools/**"
+      - "RemoteTools/**"
+      - "wm/hyprland/**"
+      - ".github/workflows/utilities-tests.yml"
+  pull_request:
+    paths:
+      - "SystemTools/**"
+      - "ShellTools/**"
+      - "RemoteTools/**"
+      - "wm/hyprland/**"
+      - ".github/workflows/utilities-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test installers, scripts, power state and terminal layouts
+        run: python3 -m unittest discover -s SystemTools/tests -v
+      - name: Smoke-check existing remote and Sway tools
+        run: ./RemoteTools/tests-smoke.sh

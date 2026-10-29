@@ -1,0 +1,12 @@
+{
+  "me": "local-name",
+  "notify_ttl_ms": 20000,
+  "overlay_ttl_seconds": 20,
+  "peers": {
+    "workstation": {
+      "host": "my-host",
+      "overlay": true,
+      "remote_cmd": "rchat --receive"
+    }
+  }
+}

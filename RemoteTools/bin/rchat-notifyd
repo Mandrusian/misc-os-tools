@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+import json
+import os, socket, sys, time
+from pathlib import Path
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame
+from PyQt6.QtGui import QColor
+
+LOG = Path.home() / ".rchat" / "messages.jsonl"
+CONFIG = Path.home() / ".config" / "rchat" / "config.json"
+DEFAULT_TTL = 20
+POLL_MS = 250
+CARD_WIDTH = 360
+
+def load_cfg():
+    try: return json.loads(CONFIG.read_text())
+    except Exception: return {}
+
+class Card(QFrame):
+    def __init__(self, title, body, on_dismiss):
+        super().__init__()
+        self.setStyleSheet("Card { background-color: #1e1e1e; border: 1px solid #4a4a4a; border-radius: 6px; }")
+        self.setFixedWidth(CARD_WIDTH)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(4)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        t = QLabel(title)
+        t.setStyleSheet("color: #8be9fd; font-weight: bold; font-size: 12px; border: none;")
+        header.addWidget(t)
+        header.addStretch()
+        x = QPushButton("\u00d7")
+        x.setFixedSize(20, 20)
+        x.setStyleSheet("QPushButton { background: transparent; color: #888; border: none; font-size: 16px; font-weight: bold; } QPushButton:hover { color: #ff5555; }")
+        x.clicked.connect(lambda: on_dismiss(self))
+        header.addWidget(x)
+        lay.addLayout(header)
+        b = QLabel(body)
+        b.setWordWrap(True)
+        b.setStyleSheet("color: #f8f8f2; font-size: 11px; border: none;")
+        lay.addWidget(b)
+
+class Overlay(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("rchatOverlay")
+        self.setAutoFillBackground(True)
+        _pal = self.palette()
+        _pal.setColor(self.backgroundRole(), QColor("#1a1a1a"))
+        self.setPalette(_pal)
+
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool | Qt.WindowType.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)
+
+        self.root = QVBoxLayout(self)
+        self.root.setContentsMargins(8, 8, 8, 8)
+        self.root.setSpacing(6)
+        self.root.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self.header = QFrame()
+        self.header.setStyleSheet("QFrame { background-color: #2a2a2a; border-radius: 6px; }")
+        self.header.setFixedWidth(CARD_WIDTH)
+        hl = QHBoxLayout(self.header)
+        hl.setContentsMargins(10, 6, 10, 6)
+        self.count_label = QLabel("rchat")
+        self.count_label.setStyleSheet("color: #bbb; font-weight: bold; font-size: 11px; border: none;")
+        hl.addWidget(self.count_label)
+        hl.addStretch()
+        clear_btn = QPushButton("clear all")
+        clear_btn.setStyleSheet("QPushButton { background: #3a3a3a; color: #ddd; border: none; padding: 3px 8px; border-radius: 3px; font-size: 10px; } QPushButton:hover { background: #555; }")
+        clear_btn.clicked.connect(self.clear_all)
+        hl.addWidget(clear_btn)
+        self.root.addWidget(self.header)
+        self.header.hide()
+
+        self.cards = []
+        cfg = load_cfg()
+        self.ttl = int(cfg.get("overlay_ttl_seconds", DEFAULT_TTL))
+        self.pos = LOG.stat().st_size if LOG.exists() else 0
+
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.poll)
+        self.timer.start(POLL_MS)
+
+    def position_window(self):
+        self.adjustSize()
+        screen = QApplication.primaryScreen().availableGeometry()
+        w = self.width()
+        h = self.height()
+        x = screen.x() + screen.width() - w - 16
+        y = screen.y() + 16
+        self.setGeometry(x, y, w, h)
+
+    def poll(self):
+        try:
+            if LOG.exists():
+                size = LOG.stat().st_size
+                if self.pos > size: self.pos = 0
+                with open(LOG, "rb") as f:
+                    f.seek(self.pos)
+                    data = f.read()
+                    self.pos = f.tell()
+                for line in data.splitlines():
+                    line = line.strip()
+                    if not line: continue
+                    try: entry = json.loads(line.decode("utf-8"))
+                    except Exception: continue
+                    if entry.get("type") == "clear":
+                        self.clear_all()
+                        continue
+                    if entry.get("dir") != "in": continue
+                    self.add_card(f"rchat: {entry.get('from', '?')}", str(entry.get("msg", "")))
+        except Exception as e: print(f"poll error: {e}", file=sys.stderr)
+        self.expire()
+
+    def save_state(self):
+        try:
+            path = Path.home() / ".rchat" / "overlay-state.json"
+            data = {"updated": time.time(), "me": load_cfg().get("me", socket.gethostname()), "cards": [
+                {"title": row[2].get("title", "?"), "body": row[2].get("body", ""), "added": row[2].get("added", 0), "expires": row[1] or 0} for row in self.cards]}
+            path.write_text(json.dumps(data))
+        except Exception as e: print(f"save_state: {e}", file=sys.stderr)
+
+    def add_card(self, title, body):
+        c = Card(title, body, self.dismiss)
+        self.root.addWidget(c)
+        exp = 0 if self.ttl <= 0 else time.time() + self.ttl
+        self.cards.append([c, exp, {"title": title, "body": body, "added": time.time()}])
+        self.update_header()
+        self.position_window()
+        if not self.isVisible(): self.show()
+        self.save_state()
+
+    def update_header(self):
+        n = len(self.cards)
+        if n == 0: self.header.hide()
+        else:
+            self.header.show()
+            self.count_label.setText(f"rchat \u2014 {n} message{'s' if n != 1 else ''}")
+
+    def dismiss(self, card):
+        for row in list(self.cards):
+            if row[0] is card:
+                card.setParent(None); card.deleteLater()
+                self.cards.remove(row)
+                break
+        self.update_header()
+        if not self.cards: self.hide()
+        else: self.position_window()
+        self.save_state()
+
+    def clear_all(self):
+        for row in self.cards:
+            row[0].setParent(None); row[0].deleteLater()
+        self.cards = []
+        self.update_header()
+        self.hide()
+        self.save_state()
+
+    def expire(self):
+        if self.ttl <= 0: return
+        now = time.time()
+        changed = False
+        for row in list(self.cards):
+            if row[1] and row[1] <= now:
+                row[0].setParent(None); row[0].deleteLater()
+                self.cards.remove(row)
+                changed = True
+        if changed:
+            self.update_header()
+            if not self.cards: self.hide()
+            else: self.position_window()
+            self.save_state()
+
+def main():
+    # Tell Qt to use the layer-shell plugin
+    os.environ["QT_WAYLAND_SHELL_INTEGRATION"] = "layer-shell"
+    app = QApplication(sys.argv)
+    app.setApplicationName("rchat-notifyd")
+    app.setQuitOnLastWindowClosed(False)
+    overlay = Overlay()
+    overlay.hide()
+    sys.exit(app.exec())
+
+if __name__ == "__main__": main()
