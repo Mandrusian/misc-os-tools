@@ -7,14 +7,16 @@ on:
       - "SystemTools/**"
       - "ShellTools/**"
       - "RemoteTools/**"
-      - "wm/hyprland/**"
+      - "SwayMonitorTUI/**"
+      - "wm/**"
       - ".github/workflows/utilities-tests.yml"
   pull_request:
     paths:
       - "SystemTools/**"
       - "ShellTools/**"
       - "RemoteTools/**"
-      - "wm/hyprland/**"
+      - "SwayMonitorTUI/**"
+      - "wm/**"
       - ".github/workflows/utilities-tests.yml"
 
 permissions:

@@ -41,7 +41,7 @@ paths based on `$HOME` or `Path.home()` remain where they are part of tool behav
 | `gh-push`, `sway-monitor-tui` | Already published; identical source exists |
 | `pipe_isos`, `rclip`, `rfiles`, `rlogin`, `rsch`, `rscr`, `rscr-viewer`, `rspy`, `rtui`, `rwake` | Already published; kept repository versions rather than importing machine-specific local variants |
 | `sway-edge-snap.py`, `sway-swipe-ws`, `swayshortcuts`, older `sway-monitor-tui.py` | Existing Sway tools or older variants; no duplicate import |
-| `swaym` | Already on the existing remote work branch; local layout is machine-specific |
+| `swaym` | Originally on the remote work branch; generic version and SwayFX/Waybar configs now incorporated into `wm/sway/` |
 | `rsys` | Embedded private SSH target and host-specific administrative/session actions; remains excluded as documented in RemoteTools |
 | Asahi-suite symlinks and compiled programs | Belong to separate projects; no binary or duplicate-source import |
 | Python package entry points, `vba_extract.py`, aquarium launchers | Installed third-party utilities |
