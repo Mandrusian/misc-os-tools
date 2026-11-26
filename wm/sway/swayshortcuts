@@ -4,8 +4,6 @@ import argparse
 import glob
 import os
 import re
-import shlex
-import subprocess
 from pathlib import Path
 
 MODS = {"$mod": "Mod", "Mod4": "Super", "Mod1": "Alt", "Control": "Ctrl", "Ctrl": "Ctrl", "Shift": "Shift", "Mod2": "Mod2", "Mod3": "Mod3", "Mod5": "Mod5"}
@@ -53,11 +51,11 @@ def main():
     args = ap.parse_args()
     try:
         lines = read_config(args.config or config_path())
-    except (OSError, FileNotFoundError) as exc:
+    except OSError as exc:
         ap.error(str(exc))
     mode = "default"
     found = []
-    for path, line in lines:
+    for _path, line in lines:
         mm = re.match(r"^mode\s+['\"]?([^'\"]+)['\"]?\s*\{?", line)
         if mm:
             mode = mm.group(1)
@@ -65,24 +63,24 @@ def main():
         if line == "}":
             mode = "default"
             continue
-        m = re.match(r"^(bindsym|bindcode)\s+(?:--[^\s]+\s+)*([^\s]+)\s+(.+)$", line)
+        m = re.match(r"^(bindsym|bindcode)\s+((?:--[^\s]+\s+)*)([^\s]+)\s+(.+)$", line)
         if not m:
             continue
-        kind, key, command = m.groups()
+        kind, options, key, command = m.groups()
         if args.raw:
-            readable = f"{kind} {key} {command}"
+            readable = f"{kind} {options}{key} {command}"
         else:
             readable = key.replace("+", " + ")
             for old, new in MODS.items():
                 readable = re.sub(rf"(?<![A-Za-z0-9_]){re.escape(old)}(?![A-Za-z0-9_])", new, readable)
             readable = f"{readable:<26} {command}"
-        found.append((mode, readable, path.name))
+        found.append((mode, readable))
     if not found:
         print("No bindsym/bindcode bindings found.")
         return 0
     print("\033[1mSway key bindings\033[0m")
     last_mode = None
-    for mode, binding, _source in sorted(found, key=lambda x: (x[0] != "default", x[0].lower(), x[1].lower())):
+    for mode, binding in sorted(found, key=lambda x: (x[0] != "default", x[0].lower(), x[1].lower())):
         if mode != last_mode:
             print(f"\n\033[1m[{mode}]\033[0m")
             last_mode = mode

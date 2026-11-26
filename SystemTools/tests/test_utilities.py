@@ -2,6 +2,7 @@
 import ast
 import fcntl
 import importlib.util
+import json
 import os
 from pathlib import Path
 import pty
@@ -38,16 +39,19 @@ class UtilitiesTest(unittest.TestCase):
     def test_imported_sources_parse(self):
         paths = list((ROOT / 'SystemTools').rglob('*'))
         paths += list((ROOT / 'ShellTools').rglob('*'))
-        paths += list((ROOT / 'wm/hyprland').rglob('*'))
+        paths += list((ROOT / 'wm').rglob('*'))
+        paths += list((ROOT / 'SwayMonitorTUI').rglob('*'))
         paths += list((ROOT / 'RemoteTools/bin').iterdir())
         for path in paths:
             if not path.is_file() or '__pycache__' in path.parts:
                 continue
             text = path.read_text()
-            if path.suffix == '.py' or text.startswith('#!/usr/bin/env python'):
+            first = text.splitlines()[0] if text.splitlines() else ''
+            if path.suffix == '.py' or first.startswith('#!/usr/bin/env python'):
                 ast.parse(text, filename=str(path))
-            elif path.suffix in ('.sh', '.bash') or 'bash' in text.splitlines()[0] or text.startswith('#!/bin/sh'):
-                self.run_command(['bash', '-n', str(path)])
+            elif path.suffix in ('.sh', '.bash') or 'bash' in first or first.startswith('#!/bin/sh'):
+                shell = 'sh' if first == '#!/bin/sh' else 'bash'
+                self.run_command([shell, '-n', str(path)])
 
     def test_install_with_spaces_and_custom_xdg_paths(self):
         helper = self.install()
@@ -141,7 +145,9 @@ else:
                     process.send_signal(signal.SIGWINCH)
                     collect(.15)
                     os.write(master, b'q')
-                    process.wait(timeout=4)
+                    deadline = time.monotonic() + 4
+                    while process.poll() is None and time.monotonic() < deadline:
+                        collect(.05)
                     collect(.05)
                     self.assertEqual(process.returncode, 0, output.decode(errors='replace'))
                     self.assertNotIn(b'Traceback', output)
@@ -150,6 +156,54 @@ else:
                         process.kill()
                     process.wait()
                     os.close(master)
+
+    def test_sway_tools_offline(self):
+        waybar_cfg = json.loads((ROOT / 'wm/sway/waybar/config.jsonc').read_text())
+        self.assertIn('clock', waybar_cfg)
+
+        swaym = str(ROOT / 'wm/sway/swaym')
+        self.assertIn('Usage: swaym', self.run_command([swaym, '--help']).stdout)
+
+        mock_bin = self.home / 'sway-mocks'
+        mock_bin.mkdir()
+        log_file = self.home / 'swaymsg.log'
+        mock_swaymsg = mock_bin / 'swaymsg'
+        mock_swaymsg.write_text('''#!/usr/bin/env python3
+import json, os, sys
+if sys.argv[1:] == ['-t', 'get_outputs', '-r']:
+    print(json.dumps([
+        {'name': 'eDP-1', 'active': True, 'rect': {'x': 0, 'y': 0}},
+        {'name': 'HDMI-A-1', 'active': True, 'rect': {'x': 1920, 'y': 0}},
+        {'name': 'DP-2', 'active': False, 'rect': {'x': 0, 'y': 0}},
+    ]))
+else:
+    with open(os.environ['MOCK_SWAY_LOG'], 'a') as f:
+        f.write(' '.join(sys.argv[1:]) + '\\n')
+''')
+        mock_swaymsg.chmod(0o755)
+        sway_env = {**self.env, 'XDG_CONFIG_HOME': str(self.home / 'cfg'),
+                    'SWAYSOCK': '/tmp/mock-sway.sock', 'MOCK_SWAY_LOG': str(log_file),
+                    'PATH': str(mock_bin) + os.pathsep + os.environ['PATH']}
+        subprocess.run([swaym, '--save-current'], env=sway_env, check=True, capture_output=True, text=True)
+        monitors_conf = self.home / 'cfg/sway/monitors.conf'
+        self.assertIn('output HDMI-A-1 position 1920 0', monitors_conf.read_text())
+        subprocess.run([swaym], env=sway_env, check=True, capture_output=True, text=True)
+        self.assertEqual(log_file.read_text().splitlines(), [
+            'output eDP-1 position 0 0',
+            'output HDMI-A-1 position 1920 0',
+        ])
+
+        inc = self.home / 'extra.conf'
+        inc.write_text('mode "resize" {\n    bindsym Left resize shrink width 10px\n}\n')
+        main_cfg = self.home / 'sway.conf'
+        main_cfg.write_text(
+            'set $mod Mod4\n'
+            'bindsym --locked XF86AudioMute exec wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle\n'
+            f'include {inc.name}\n'
+        )
+        raw_out = self.run_command(['python3', str(ROOT / 'wm/sway/swayshortcuts'), '--config', str(main_cfg), '--raw']).stdout
+        self.assertIn('bindsym --locked XF86AudioMute exec wpctl', raw_out)
+        self.assertIn('[resize]', raw_out)
 
 
 if __name__ == '__main__':

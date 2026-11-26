@@ -154,17 +154,19 @@ class Metrics:
                 self.watts = (old_energy - energy) * 3600 / 1e6 / (now - old_time)
         procs, current_process = [], {}
         ticks_per_second = os.sysconf('SC_CLK_TCK')
-        for directory in Path('/proc').iterdir():
-            if not directory.name.isdecimal():
-                continue
-            info = proc_info(directory.name)
-            if info is None:
-                continue
-            identity = (info['pid'], info['start'])
-            previous_ticks = self.last_process.get(identity, info['ticks'])
-            info['cpu'] = max(0, (info['ticks'] - previous_ticks) / ticks_per_second / elapsed * 100) if elapsed else 0
-            current_process[identity] = info['ticks']
-            procs.append(info)
+        proc_root = Path('/proc')
+        if proc_root.is_dir():
+            for directory in proc_root.iterdir():
+                if not directory.name.isdecimal():
+                    continue
+                info = proc_info(directory.name)
+                if info is None:
+                    continue
+                identity = (info['pid'], info['start'])
+                previous_ticks = self.last_process.get(identity, info['ticks'])
+                info['cpu'] = max(0, (info['ticks'] - previous_ticks) / ticks_per_second / elapsed * 100) if elapsed else 0
+                current_process[identity] = info['ticks']
+                procs.append(info)
         self.processes = procs
         self.last_process = current_process
         self.last_time = now
